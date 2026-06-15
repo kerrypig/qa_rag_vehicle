@@ -18,6 +18,30 @@ from session.memory import SessionState
 log = logging.getLogger(__name__)
 
 
+def format_retrieved_chunks(
+    docs: list[Document],
+    scores: dict[str, float],
+    *,
+    cache_hits: int,
+    new_retrieved: int,
+) -> str:
+    """格式化检索 chunk 全文，供 log 文件与 QA 日志使用。"""
+    lines = [
+        f"[检索] 缓存命中 {cache_hits} | 新检索 {new_retrieved} | 合计 {len(docs)} 条"
+    ]
+    for i, doc in enumerate(docs, start=1):
+        meta = doc.metadata
+        cid = meta.get("chunk_id", "")
+        score = scores.get(cid, 0.0)
+        page = meta.get("page", "?")
+        section = meta.get("section_path", "")
+        lines.append(
+            f"  [{i}] P.{page} | {section} | score={score:.4f}\n"
+            f"      {doc.page_content.strip()}"
+        )
+    return "\n".join(lines)
+
+
 @dataclass
 class RetrievalResult:
     query: str
@@ -129,6 +153,16 @@ class Retriever:
             final = [d for d in final if scores.get(d.metadata["chunk_id"], 0) >= threshold]
 
         session.update_cache(final, scores, max_size=cache_cfg.get("max_size", 20))
+
+        log.info(
+            "\n%s",
+            format_retrieved_chunks(
+                final,
+                scores,
+                cache_hits=len(cached_docs),
+                new_retrieved=new_count,
+            ),
+        )
 
         return RetrievalResult(
             query=question,

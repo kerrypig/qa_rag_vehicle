@@ -17,8 +17,10 @@ from config_loader import load_config
 from generate.prompt_builder import build_prompt
 from generate.qwen_client import QwenClient
 from ingest.pipeline import run_build
-from retrieve.pipeline import Retriever
+from retrieve.pipeline import Retriever, format_retrieved_chunks
 from session.memory import SessionState
+
+log = logging.getLogger(__name__)
 
 
 def setup_logging(log_dir: Path, verbose: bool) -> None:
@@ -106,10 +108,14 @@ def cmd_chat(args) -> None:
         if question == "/log" and session.last_retrieval:
             r = session.last_retrieval
             print(f"  改写: {r['rewritten']}")
-            print(f"  缓存命中: {r['cache_hits']} | 新检索: {r['new_retrieved']}")
-            for i, d in enumerate(r["docs"], 1):
-                m = d.metadata
-                print(f"  {i}. P.{m.get('page')} {m.get('section_path')} …")
+            print(
+                format_retrieved_chunks(
+                    r["docs"],
+                    r["scores"],
+                    cache_hits=r["cache_hits"],
+                    new_retrieved=r["new_retrieved"],
+                )
+            )
             continue
         if question == "/log":
             print("  暂无可展示的检索记录。")
@@ -121,13 +127,25 @@ def cmd_chat(args) -> None:
             "cache_hits": result.cache_hits,
             "new_retrieved": result.new_retrieved,
             "docs": result.docs,
+            "scores": result.scores,
         }
+
+        chunks_log = format_retrieved_chunks(
+            result.docs,
+            result.scores,
+            cache_hits=result.cache_hits,
+            new_retrieved=result.new_retrieved,
+        )
+        log.info("问题: %s", question)
+        if result.rewritten_query != question:
+            log.info("改写: %s", result.rewritten_query)
+        log.info("\n%s", chunks_log)
 
         if config.get("logging", "verbose"):
             hs = "hybrid" if config.get("retrieval", "hybrid_search", "enabled") else "vector"
             print(
                 f"[检索] 缓存 {result.cache_hits} | 新检索 {result.new_retrieved} | "
-                f"{config.chunk_strategy}+{hs}"
+                f"{config.chunk_strategy}+{hs}（chunk 全文见 logs/）"
             )
             if result.rewritten_query != question:
                 print(f"[改写] {result.rewritten_query}")
@@ -141,7 +159,9 @@ def cmd_chat(args) -> None:
 
         if log_cfg.get("save_qa_log"):
             qa_log.append(
-                f"Q: {question}\n改写: {result.rewritten_query}\n"
+                f"Q: {question}\n"
+                f"改写: {result.rewritten_query}\n"
+                f"资料:\n{chunks_log}\n"
                 f"A: {answer}\n---"
             )
 
