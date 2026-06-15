@@ -1,0 +1,67 @@
+vehicle:
+  model: "M9-EVR-2025"
+  doc_types:
+    - owner_manual
+
+paths:
+  pdf_dir: "./data/manuals"
+  index_dir: "./indexes"
+  log_dir: "./logs"
+
+chunking:
+  strategy: "hierarchy"
+
+  hierarchy:
+    min_chunk_chars: 200
+    max_chunk_chars: 1500
+    merge_short_siblings: true
+
+  semantic:
+    embed_model: "BAAI/bge-large-zh-v1.5"
+    breakpoint_threshold: 85
+    min_chunk_chars: 100
+    max_chunk_chars: 2000
+
+  fixed_size:
+    chunk_size: 800
+    overlap: 150
+
+embedding:
+  model: "BAAI/bge-large-zh-v1.5"
+  device: "cuda"
+  normalize: true
+
+retrieval:
+  top_k: 5
+  score_threshold: 0.35
+
+  hybrid_search:
+    enabled: true
+    bm25_weight: 0.4
+    rrf_k: 60
+
+  metadata_filter:
+    enabled: true
+
+query_rewrite:
+  enabled: true
+  model: "qwen2.5:7b"
+  temperature: 0.0
+  max_history_turns: 2
+
+session:
+  chunk_cache:
+    max_size: 20
+    reuse_threshold: 0.55
+    max_reuse: 3
+
+generation:
+  model: "qwen3.6-plus"
+  api_key_env: "DASHSCOPE_API_KEY"
+  base_url_env: "DASHSCOPE_BASE_URL"
+  temperature: 0.1
+  max_tokens: 2048
+
+logging:
+  verbose: true
+  save_qa_log: true
