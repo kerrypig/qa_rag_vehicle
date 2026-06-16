@@ -28,6 +28,17 @@ class SessionState:
     def recent_user_questions(self, n: int) -> list[str]:
         return [t[0] for t in self.turns[-n:]]
 
+    def last_turn(self) -> tuple[str, str] | None:
+        if not self.turns:
+            return None
+        return self.turns[-1]
+
+    def earlier_user_questions(self, n: int) -> list[str]:
+        """最近一轮之前的用户问题（不含上一轮）。"""
+        if len(self.turns) <= 1 or n <= 0:
+            return []
+        return [t[0] for t in self.turns[-(n + 1) : -1]]
+
     def section_hints(self, limit: int = 5) -> list[str]:
         hints = []
         for item in self.chunk_cache.values():

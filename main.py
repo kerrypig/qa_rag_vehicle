@@ -2,7 +2,8 @@
 """车载手册 RAG 问答 — CLI 入口。"""
 
 from __future__ import annotations
-
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"
 import argparse
 import logging
 import sys

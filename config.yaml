@@ -37,6 +37,9 @@ retrieval:
   score_threshold: 0.2   # 向量余弦相似度下限；Hybrid 模式下不作用于 RRF 融合分
   section_boost: 1.1       # keyword 命中 section_path 时 RRF 分数倍率；设为 1.0 关闭
 
+  keyword_search:
+    enabled: true          # 是否启用关键词检索路径（keyword top_k）
+
   hybrid_search:
     enabled: true
     bm25_weight: 0.4
@@ -47,13 +50,13 @@ retrieval:
     enabled: true
 
 query_rewrite:
-  enabled: true
+  enabled: true            # 是否启用 Ollama 问句改写（rewritten_q 检索路径）
   model: "qwen2.5:7b"
   temperature: 0.0
   max_history_turns: 2   # 最近一轮单独传入；此项仅控制「更早」用户问题条数
 
 verification:
-  enabled: true
+  enabled: false            # 召回后是否用 qwen2.5 逐条核对
   model: "qwen2.5:7b"
   temperature: 0.0
 
