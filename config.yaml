@@ -40,6 +40,13 @@ retrieval:
   keyword_search:
     enabled: true          # 是否启用关键词检索路径（keyword top_k）
 
+  bookmark_match:
+    enabled: true          # 是否用 PDF 书签 + qwen2.5 匹配章节并召回 chunk
+    max_matches: 3          # 最多匹配几个书签章节
+    chunks_per_match: 2    # 每个书签章节最多取几个 chunk
+    model: "qwen2.5:7b"
+    temperature: 0.0
+
   hybrid_search:
     enabled: true
     bm25_weight: 0.4
@@ -56,9 +63,10 @@ query_rewrite:
   max_history_turns: 2   # 最近一轮单独传入；此项仅控制「更早」用户问题条数
 
 verification:
-  enabled: false            # 召回后是否用 qwen2.5 逐条核对
+  enabled: true            # 召回后是否用 qwen2.5 核对（仅 hybrid 路径，书签 chunk 跳过）
   model: "qwen2.5:7b"
   temperature: 0.0
+  min_keep: 2              # hybrid 路径至少保留条数，避免误杀 GT
 
 session:
   chunk_cache:

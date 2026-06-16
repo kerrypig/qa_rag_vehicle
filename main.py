@@ -110,8 +110,11 @@ def cmd_chat(args) -> None:
             r = session.last_retrieval
             print(f"  关键词: {r['keyword']}")
             print(f"  改写: {r['rewritten']}")
+            if r.get("bookmark_titles"):
+                print(f"  书签: {', '.join(r['bookmark_titles'])}")
             if r.get("pre_verify_count"):
-                print(f"  核对: {len(r['docs'])}/{r['pre_verify_count']} 条通过")
+                hybrid_kept = len(r["docs"]) - r.get("bookmark_count", 0)
+                print(f"  核对: hybrid {hybrid_kept}/{r['pre_verify_count']} 条保留")
             print(
                 format_retrieved_chunks(
                     r["docs"],
@@ -132,6 +135,8 @@ def cmd_chat(args) -> None:
             "cache_hits": result.cache_hits,
             "new_retrieved": result.new_retrieved,
             "pre_verify_count": result.pre_verify_count,
+            "bookmark_titles": result.bookmark_titles,
+            "bookmark_count": result.bookmark_count,
             "docs": result.docs,
             "scores": result.scores,
         }
@@ -147,15 +152,22 @@ def cmd_chat(args) -> None:
             log.info("关键词: %s", result.keyword)
         if result.rewritten_query != question:
             log.info("改写: %s", result.rewritten_query)
-        if result.pre_verify_count:
-            log.info("核对: %d/%d 条通过", len(result.docs), result.pre_verify_count)
+        if result.bookmark_titles:
+            log.info("书签: %s (%d chunks)", ", ".join(result.bookmark_titles), result.bookmark_count)
+        if config.verification_enabled and result.pre_verify_count:
+            hybrid_kept = len(result.docs) - result.bookmark_count
+            log.info("核对: hybrid %d/%d 条保留", hybrid_kept, result.pre_verify_count)
         log.info("检索资料:\n%s", chunks_log)
 
         if config.get("logging", "verbose"):
             hs = "hybrid" if config.get("retrieval", "hybrid_search", "enabled") else "vector"
+            verify_note = ""
+            if config.verification_enabled and result.pre_verify_count:
+                hybrid_kept = len(result.docs) - result.bookmark_count
+                verify_note = f"核对 hybrid {hybrid_kept}/{result.pre_verify_count} | "
             print(
                 f"[检索] 缓存 {result.cache_hits} | 新检索 {result.new_retrieved} | "
-                f"核对 {len(result.docs)}/{result.pre_verify_count} | "
+                f"书签 {result.bookmark_count} | {verify_note}"
                 f"{config.chunk_strategy}+{hs}（chunk 全文见 logs/）"
             )
             if result.keyword != question:

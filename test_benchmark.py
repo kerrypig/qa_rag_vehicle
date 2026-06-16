@@ -6,9 +6,11 @@
   python test_benchmark.py lookup 空调 制冷  # 按文本查 chunk_id（标注 ground truth）
 
 config.yaml 开关:
-  query_rewrite.enabled          — 是否改写问句
-  retrieval.keyword_search.enabled — 是否启用关键词检索路径
-  verification.enabled           — 召回后是否 qwen 核对
+  query_rewrite.enabled              — 是否改写问句
+  retrieval.keyword_search.enabled   — 是否启用关键词检索路径
+  retrieval.bookmark_match.enabled   — 是否 PDF 书签匹配
+  retrieval.bookmark_match.max_matches — 书签最大匹配数
+  verification.enabled               — 召回后是否 qwen 核对（不含书签 chunk）
 """
 from __future__ import annotations
 
@@ -116,13 +118,12 @@ def compute_metrics(retrieved_ids: list[str], expected_ids: list[str]) -> dict:
 
 
 def print_config_flags(config) -> None:
-    rw = config.get("query_rewrite", "enabled")
-    kw = config.get("retrieval", "keyword_search", "enabled")
-    ver = config.get("verification", "enabled")
     print("=== 当前检索策略开关 ===")
-    print(f"  rewrite:          {rw}")
-    print(f"  keyword_search:   {kw}")
-    print(f"  verification:     {ver}")
+    print(f"  rewrite:          {config.rewrite_enabled}")
+    print(f"  keyword_search:   {config.keyword_search_enabled}")
+    print(f"  bookmark_match:   {config.bookmark_match_enabled}")
+    print(f"  bookmark_max:     {config.bookmark_max_matches}")
+    print(f"  verification:     {config.verification_enabled}")
     print(
         f"  top_k:            keyword={config.get('retrieval', 'keyword_top_k', default=2)}"
         f" + rewritten={config.get('retrieval', 'rewritten_top_k', default=5)}"
@@ -181,8 +182,11 @@ def cmd_run(args) -> None:
             print(f"  关键词: {result.keyword}")
         if result.rewritten_query != case.question:
             print(f"  改写:   {result.rewritten_query}")
-        if result.pre_verify_count:
-            print(f"  核对:   {len(result.docs)}/{result.pre_verify_count} 条通过")
+        if result.bookmark_titles:
+            print(f"  书签:   {', '.join(result.bookmark_titles)} ({result.bookmark_count} chunks)")
+        if config.verification_enabled and result.pre_verify_count:
+            hybrid_kept = len(result.docs) - result.bookmark_count
+            print(f"  核对:   hybrid {hybrid_kept}/{result.pre_verify_count} 条保留（书签跳过核对）")
 
         retrieved_ids = [d.metadata["chunk_id"] for d in result.docs]
         metrics = compute_metrics(retrieved_ids, expected_ids)
@@ -192,8 +196,9 @@ def cmd_run(args) -> None:
             cid = doc.metadata["chunk_id"]
             score = result.scores.get(cid, 0.0)
             mark = "✓" if cid in set(expected_ids) else " "
+            src = "书签" if doc.metadata.get("retrieval_source") == "bookmark" else "hybrid"
             preview = doc.page_content.strip().replace("\n", " ")[:80]
-            print(f"    [{rank}]{mark} {cid} score={score:.4f} | {preview}…")
+            print(f"    [{rank}]{mark} [{src}] {cid} score={score:.4f} | {preview}…")
 
         if metrics["hit"] is not None:
             total += 1
