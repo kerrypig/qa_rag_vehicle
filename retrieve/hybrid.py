@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from langchain_core.documents import Document
 
 
@@ -22,3 +24,23 @@ def reciprocal_rank_fusion(
 
     merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [(docs[cid], score) for cid, score in merged[:top_k]]
+
+
+def apply_section_boost(
+    ranked: list[tuple[Document, float]],
+    keywords: str,
+    boost: float = 1.1,
+) -> list[tuple[Document, float]]:
+    """keyword 命中 section_path 时提升 RRF 分数（方案 B，轻量标签 boost）。"""
+    if boost <= 1.0 or not keywords:
+        return ranked
+    tokens = {t for t in re.findall(r"[\w\u4e00-\u9fff]+", keywords.lower()) if len(t) >= 2}
+    if not tokens:
+        return ranked
+    boosted: list[tuple[Document, float]] = []
+    for doc, score in ranked:
+        sp = doc.metadata.get("section_path", "").lower()
+        if any(t in sp for t in tokens):
+            score *= boost
+        boosted.append((doc, score))
+    return sorted(boosted, key=lambda x: x[1], reverse=True)

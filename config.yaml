@@ -32,12 +32,15 @@ embedding:
   normalize: true
 
 retrieval:
-  top_k: 5
-  score_threshold: 0.35
+  keyword_top_k: 2
+  rewritten_top_k: 5
+  score_threshold: 0.2   # 向量余弦相似度下限；Hybrid 模式下不作用于 RRF 融合分
+  section_boost: 1.1       # keyword 命中 section_path 时 RRF 分数倍率；设为 1.0 关闭
 
   hybrid_search:
     enabled: true
     bm25_weight: 0.4
+    keyword_bm25_weight: 0.6  # keyword 路径 BM25 权重（偏关键词召回）
     rrf_k: 60
 
   metadata_filter:
@@ -47,7 +50,12 @@ query_rewrite:
   enabled: true
   model: "qwen2.5:7b"
   temperature: 0.0
-  max_history_turns: 2
+  max_history_turns: 2   # 最近一轮单独传入；此项仅控制「更早」用户问题条数
+
+verification:
+  enabled: true
+  model: "qwen2.5:7b"
+  temperature: 0.0
 
 session:
   chunk_cache:

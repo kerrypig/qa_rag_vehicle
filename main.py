@@ -107,7 +107,10 @@ def cmd_chat(args) -> None:
             continue
         if question == "/log" and session.last_retrieval:
             r = session.last_retrieval
+            print(f"  关键词: {r['keyword']}")
             print(f"  改写: {r['rewritten']}")
+            if r.get("pre_verify_count"):
+                print(f"  核对: {len(r['docs'])}/{r['pre_verify_count']} 条通过")
             print(
                 format_retrieved_chunks(
                     r["docs"],
@@ -123,9 +126,11 @@ def cmd_chat(args) -> None:
 
         result = retriever.retrieve(question, session)
         session.last_retrieval = {
+            "keyword": result.keyword,
             "rewritten": result.rewritten_query,
             "cache_hits": result.cache_hits,
             "new_retrieved": result.new_retrieved,
+            "pre_verify_count": result.pre_verify_count,
             "docs": result.docs,
             "scores": result.scores,
         }
@@ -137,16 +142,23 @@ def cmd_chat(args) -> None:
             new_retrieved=result.new_retrieved,
         )
         log.info("问题: %s", question)
+        if result.keyword != question:
+            log.info("关键词: %s", result.keyword)
         if result.rewritten_query != question:
             log.info("改写: %s", result.rewritten_query)
-        log.info("\n%s", chunks_log)
+        if result.pre_verify_count:
+            log.info("核对: %d/%d 条通过", len(result.docs), result.pre_verify_count)
+        log.info("检索资料:\n%s", chunks_log)
 
         if config.get("logging", "verbose"):
             hs = "hybrid" if config.get("retrieval", "hybrid_search", "enabled") else "vector"
             print(
                 f"[检索] 缓存 {result.cache_hits} | 新检索 {result.new_retrieved} | "
+                f"核对 {len(result.docs)}/{result.pre_verify_count} | "
                 f"{config.chunk_strategy}+{hs}（chunk 全文见 logs/）"
             )
+            if result.keyword != question:
+                print(f"[关键词] {result.keyword}")
             if result.rewritten_query != question:
                 print(f"[改写] {result.rewritten_query}")
 
@@ -155,22 +167,18 @@ def cmd_chat(args) -> None:
         session.response_id = rid
         session.add_turn(question, answer)
 
+        log.info("回答: %s", answer)
+
         print(f"助手: {answer}\n")
 
         if log_cfg.get("save_qa_log"):
-            qa_log.append(
-                f"Q: {question}\n"
-                f"改写: {result.rewritten_query}\n"
-                f"资料:\n{chunks_log}\n"
-                f"A: {answer}\n---"
-            )
+            qa_log.append(f"Q: {question}\nA: {answer}")
 
     if qa_log and log_cfg.get("save_qa_log"):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = config.log_dir / f"qa_{ts}.txt"
-        path.write_text("\n\n".join(qa_log), encoding="utf-8")
-        print(f"问答日志: {path}")
-
+        path.write_text("\n\n---\n\n".join(qa_log), encoding="utf-8")
+        print(f"问答日志: {path}（检索详情见同目录 run_*.log）")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="车载手册 RAG 问答系统")
