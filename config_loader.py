@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +17,32 @@ class AppConfig:
     root: Path = ROOT
 
     @property
-    def vehicle_model(self) -> str:
-        return self.raw["vehicle"]["model"]
+    def models(self) -> list[dict]:
+        """车型映射表条目（id / name / file / aliases）。"""
+        return self.raw["vehicle"].get("models", [])
+    @property
+    def model_ids(self) -> list[str]:
+        return [m["id"] for m in self.models]
+    def model_for_file(self, filename: str) -> str | None:
+        """按文件名查车型 id；未登记返回 None。"""
+        for m in self.models:
+            if m.get("file") == filename:
+                return m["id"]
+        return None
+    def model_display(self, model_id: str) -> str:
+        for m in self.models:
+            if m["id"] == model_id:
+                return m.get("name", model_id)
+        return model_id
+    def model_aliases(self) -> list[tuple[str, str]]:
+        """返回 (model_id, alias) 列表，含 id / name / 配置别名，供问句识别。"""
+        pairs: list[tuple[str, str]] = []
+        for m in self.models:
+            mid = m["id"]
+            for c in [mid, m.get("name", ""), *m.get("aliases", [])]:
+                if c:
+                    pairs.append((mid, c))
+        return pairs
 
     @property
     def doc_types(self) -> list[str]:
@@ -41,9 +64,29 @@ class AppConfig:
     def log_dir(self) -> Path:
         return self.root / self.raw["paths"]["log_dir"].lstrip("./")
 
+    @property
+    def rewrite_enabled(self) -> bool:
+        return bool(self.get("query_rewrite", "enabled", default=False))
+
+    @property
+    def keyword_search_enabled(self) -> bool:
+        return bool(self.get("retrieval", "keyword_search", "enabled", default=True))
+
+    @property
+    def bookmark_match_enabled(self) -> bool:
+        return bool(self.get("retrieval", "bookmark_match", "enabled", default=False))
+
+    @property
+    def bookmark_max_matches(self) -> int:
+        return int(self.get("retrieval", "bookmark_match", "max_matches", default=3))
+
+    @property
+    def verification_enabled(self) -> bool:
+        return bool(self.get("verification", "enabled", default=False))
+
     def index_path(self, strategy: str | None = None) -> Path:
         s = strategy or self.chunk_strategy
-        return self.index_dir / s / self.vehicle_model
+        return self.index_dir / s / "corpus"
 
     def get(self, *keys: str, default: Any = None) -> Any:
         node: Any = self.raw
@@ -61,3 +104,4 @@ def load_config(path: str | Path | None = None, strategy_override: str | None = 
     if strategy_override:
         raw["chunking"]["strategy"] = strategy_override
     return AppConfig(raw=raw)
+

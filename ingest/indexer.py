@@ -38,10 +38,15 @@ def save_index(documents: list[Document], index_path: Path, config) -> None:
     with open(index_path / "bm25_corpus.json", "w", encoding="utf-8") as f:
         json.dump(corpus, f, ensure_ascii=False, indent=2)
 
+    per_model: dict[str, int] = {}
+    for d in documents:
+        mid = d.metadata.get("vehicle_model", "")
+        per_model[mid] = per_model.get(mid, 0) + 1
+
     with open(index_path / "meta.json", "w", encoding="utf-8") as f:
         json.dump(
             {
-                "vehicle_model": config.vehicle_model,
+                "models": per_model,
                 "doc_types": config.doc_types,
                 "strategy": config.chunk_strategy,
                 "chunk_count": len(documents),

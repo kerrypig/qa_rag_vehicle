@@ -2,7 +2,8 @@
 """车载手册 RAG 问答 — CLI 入口。"""
 
 from __future__ import annotations
-
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"
 import argparse
 import logging
 import sys
@@ -51,7 +52,7 @@ def cmd_info(args) -> None:
     idx = config.index_path()
     meta = idx / "meta.json"
     print("=== 车载 RAG 配置 ===")
-    print(f"车型:       {config.vehicle_model}")
+    print(f"车型数:     {len(config.model_ids)}")
     print(f"切分策略:   {config.chunk_strategy}")
     print(f"索引路径:   {idx}")
     print(f"Hybrid:     {config.get('retrieval', 'hybrid_search', 'enabled')}")
@@ -62,6 +63,11 @@ def cmd_info(args) -> None:
         with open(meta, encoding="utf-8") as f:
             m = json.load(f)
         print(f"已建库:     是 ({m.get('chunk_count', '?')} chunks)")
+        per_model = m.get("models", {})
+        if per_model:
+            print("车型 chunk 数:")
+            for mid, cnt in per_model.items():
+                print(f"  - {config.model_display(mid)}: {cnt}")
     else:
         print("已建库:     否 — 请先运行 python main.py build")
 
@@ -83,8 +89,8 @@ def cmd_chat(args) -> None:
     qa_log: list[str] = []
     log_cfg = config.raw.get("logging", {})
 
-    print(f"\n=== 车载智能问答 ({config.vehicle_model}) ===")
-    print("输入问题开始对话，/quit 退出，/clear 清空会话，/log 查看上轮检索，/config 查看配置\n")
+    print(f"\n=== 车载多车型智能问答（{len(config.model_ids)} 个车型）===")
+    print("输入问题开始对话，/quit 退出，/clear 清空会话，/log 查看上轮检索，/models 查看车型，/config 查看配置\n")
 
     while True:
         try:
@@ -105,9 +111,24 @@ def cmd_chat(args) -> None:
         if question == "/config":
             cmd_info(args)
             continue
+        if question == "/models":
+            print(f"  可用车型（{len(config.model_ids)}）：")
+            for mid in config.model_ids:
+                print(f"    - {config.model_display(mid)}")
+            if session.active_models:
+                print(f"  当前车型: {', '.join(config.model_display(m) for m in session.active_models)}")
+            continue
         if question == "/log" and session.last_retrieval:
             r = session.last_retrieval
+            if r.get("detected_models"):
+                print(f"  车型: {', '.join(config.model_display(m) for m in r['detected_models'])}")
+            print(f"  关键词: {r['keyword']}")
             print(f"  改写: {r['rewritten']}")
+            if r.get("bookmark_titles"):
+                print(f"  书签: {', '.join(r['bookmark_titles'])}")
+            if r.get("pre_verify_count"):
+                hybrid_kept = len(r["docs"]) - r.get("bookmark_count", 0)
+                print(f"  核对: hybrid {hybrid_kept}/{r['pre_verify_count']} 条保留")
             print(
                 format_retrieved_chunks(
                     r["docs"],
@@ -122,10 +143,18 @@ def cmd_chat(args) -> None:
             continue
 
         result = retriever.retrieve(question, session)
+        if result.needs_clarification:
+            print("助手: 请问您咨询的是哪个车型？可输入 /models 查看可用车型。\n")
+            continue
         session.last_retrieval = {
+            "keyword": result.keyword,
             "rewritten": result.rewritten_query,
+            "detected_models": result.detected_models,
             "cache_hits": result.cache_hits,
             "new_retrieved": result.new_retrieved,
+            "pre_verify_count": result.pre_verify_count,
+            "bookmark_titles": result.bookmark_titles,
+            "bookmark_count": result.bookmark_count,
             "docs": result.docs,
             "scores": result.scores,
         }
@@ -137,16 +166,30 @@ def cmd_chat(args) -> None:
             new_retrieved=result.new_retrieved,
         )
         log.info("问题: %s", question)
+        if result.keyword != question:
+            log.info("关键词: %s", result.keyword)
         if result.rewritten_query != question:
             log.info("改写: %s", result.rewritten_query)
-        log.info("\n%s", chunks_log)
+        if result.bookmark_titles:
+            log.info("书签: %s (%d chunks)", ", ".join(result.bookmark_titles), result.bookmark_count)
+        if config.verification_enabled and result.pre_verify_count:
+            hybrid_kept = len(result.docs) - result.bookmark_count
+            log.info("核对: hybrid %d/%d 条保留", hybrid_kept, result.pre_verify_count)
+        log.info("检索资料:\n%s", chunks_log)
 
         if config.get("logging", "verbose"):
             hs = "hybrid" if config.get("retrieval", "hybrid_search", "enabled") else "vector"
+            verify_note = ""
+            if config.verification_enabled and result.pre_verify_count:
+                hybrid_kept = len(result.docs) - result.bookmark_count
+                verify_note = f"核对 hybrid {hybrid_kept}/{result.pre_verify_count} | "
             print(
                 f"[检索] 缓存 {result.cache_hits} | 新检索 {result.new_retrieved} | "
+                f"书签 {result.bookmark_count} | {verify_note}"
                 f"{config.chunk_strategy}+{hs}（chunk 全文见 logs/）"
             )
+            if result.keyword != question:
+                print(f"[关键词] {result.keyword}")
             if result.rewritten_query != question:
                 print(f"[改写] {result.rewritten_query}")
 
@@ -155,22 +198,18 @@ def cmd_chat(args) -> None:
         session.response_id = rid
         session.add_turn(question, answer)
 
+        log.info("回答: %s", answer)
+
         print(f"助手: {answer}\n")
 
         if log_cfg.get("save_qa_log"):
-            qa_log.append(
-                f"Q: {question}\n"
-                f"改写: {result.rewritten_query}\n"
-                f"资料:\n{chunks_log}\n"
-                f"A: {answer}\n---"
-            )
+            qa_log.append(f"Q: {question}\nA: {answer}")
 
     if qa_log and log_cfg.get("save_qa_log"):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = config.log_dir / f"qa_{ts}.txt"
-        path.write_text("\n\n".join(qa_log), encoding="utf-8")
-        print(f"问答日志: {path}")
-
+        path.write_text("\n\n---\n\n".join(qa_log), encoding="utf-8")
+        print(f"问答日志: {path}（检索详情见同目录 run_*.log）")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="车载手册 RAG 问答系统")

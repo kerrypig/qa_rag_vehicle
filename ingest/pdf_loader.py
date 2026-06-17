@@ -24,9 +24,51 @@ class PageBlock:
         return "\n".join(b.text for b in self.blocks if b.text.strip())
 
 
+@dataclass
+class BookmarkEntry:
+    level: int
+    title: str
+    page: int
+    path: str
+    source_file: str = ""
+    vehicle_model: str = ""
+
+
 def _is_bold(flags: int) -> bool:
     # PyMuPDF font flags: bit 4 = bold
     return bool(flags & 2**4)
+
+
+def load_pdf_bookmarks(
+    pdf_path: str, *, source_file: str = "", vehicle_model: str = ""
+) -> list[BookmarkEntry]:
+    """从 PDF outline（书签）提取目录项。page 为 1-based 页码。"""
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    toc = doc.get_toc()
+    doc.close()
+
+    entries: list[BookmarkEntry] = []
+    stack: list[str] = []
+    for level, title, page in toc:
+        title = title.strip()
+        if not title or page < 1:
+            continue
+        while len(stack) >= level:
+            stack.pop()
+        stack.append(title)
+        entries.append(
+            BookmarkEntry(
+                level=level,
+                title=title,
+                page=page,
+                path=">".join(stack),
+                source_file=source_file,
+                vehicle_model=vehicle_model,
+            )
+        )
+    return entries
 
 
 def load_pdf(pdf_path: str) -> list[PageBlock]:

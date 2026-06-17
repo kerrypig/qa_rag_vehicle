@@ -7,7 +7,8 @@ from pathlib import Path
 
 from ingest.chunkers import get_chunker
 from ingest.indexer import save_index
-from ingest.pdf_loader import load_pdf
+from ingest.pdf_loader import load_pdf, load_pdf_bookmarks
+from retrieve.bookmark_match import save_bookmarks
 
 log = logging.getLogger(__name__)
 
@@ -23,13 +24,21 @@ def run_build(config, pdf_path: Path | None = None) -> int:
     strategy = config.chunk_strategy
     chunker = get_chunker(strategy, config)
     all_docs = []
+    all_bookmarks: list = []
 
     for pdf in pdfs:
-        log.info("解析 PDF: %s", pdf.name)
+        model_id = config.model_for_file(pdf.name)
+        if model_id is None:
+            log.warning("跳过未在 config.vehicle.models 登记的 PDF: %s", pdf.name)
+            continue
+        log.info("解析 PDF: %s（车型 %s）", pdf.name, model_id)
         pages = load_pdf(str(pdf))
+        all_bookmarks.extend(
+            load_pdf_bookmarks(str(pdf), source_file=pdf.name, vehicle_model=model_id)
+        )
         docs = chunker.chunk(
             pages,
-            vehicle_model=config.vehicle_model,
+            vehicle_model=model_id,
             doc_type=config.doc_types[0],
             source_file=pdf.name,
         )
@@ -41,4 +50,7 @@ def run_build(config, pdf_path: Path | None = None) -> int:
 
     index_path = config.index_path(strategy)
     save_index(all_docs, index_path, config)
+    if all_bookmarks:
+        save_bookmarks(all_bookmarks, index_path)
+        log.info("书签已保存：%d 条", len(all_bookmarks))
     return len(all_docs)
