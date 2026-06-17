@@ -38,6 +38,7 @@ def verify_chunks(
     temperature: float = 0.0,
     min_keep: int = 2,
     scores: dict[str, float] | None = None,
+    verdicts_out: list[dict] | None = None,
 ) -> list[Document]:
     """串行核对；书签 chunk 跳过；过严时保底 min_keep 或回退全量。"""
     if not docs:
@@ -71,6 +72,15 @@ def verify_chunks(
             )
             verdict = _parse_verdict(resp["response"])
             cid = meta.get("chunk_id", "")
+            raw = resp["response"].strip()
+            if verdicts_out is not None:
+                verdicts_out.append({
+                    "chunk_id": cid,
+                    "page": page,
+                    "section": section,
+                    "verdict": verdict,
+                    "raw": raw,
+                })
             log.info("[Verify %d/%d] %s P.%s → %s", i, len(to_verify), cid, page, "通过" if verdict else "拒绝")
             if verdict:
                 kept.append(doc)
@@ -78,6 +88,14 @@ def verify_chunks(
                 rejected.append(doc)
         except Exception as e:
             log.warning("[Verify %d/%d] Ollama 失败，保留该条: %s", i, len(to_verify), e)
+            if verdicts_out is not None:
+                verdicts_out.append({
+                    "chunk_id": meta.get("chunk_id", ""),
+                    "page": meta.get("page", "?"),
+                    "section": meta.get("section_path", ""),
+                    "verdict": True,
+                    "raw": f"(Ollama 失败，默认保留: {e})",
+                })
             kept.append(doc)
 
     if not kept:

@@ -27,12 +27,18 @@ def run_build(config, pdf_path: Path | None = None) -> int:
     all_bookmarks: list = []
 
     for pdf in pdfs:
-        log.info("解析 PDF: %s", pdf.name)
+        model_id = config.model_for_file(pdf.name)
+        if model_id is None:
+            log.warning("跳过未在 config.vehicle.models 登记的 PDF: %s", pdf.name)
+            continue
+        log.info("解析 PDF: %s（车型 %s）", pdf.name, model_id)
         pages = load_pdf(str(pdf))
-        all_bookmarks.extend(load_pdf_bookmarks(str(pdf), source_file=pdf.name))
+        all_bookmarks.extend(
+            load_pdf_bookmarks(str(pdf), source_file=pdf.name, vehicle_model=model_id)
+        )
         docs = chunker.chunk(
             pages,
-            vehicle_model=config.vehicle_model,
+            vehicle_model=model_id,
             doc_type=config.doc_types[0],
             source_file=pdf.name,
         )

@@ -31,6 +31,7 @@ class BookmarkEntry:
     page: int
     path: str
     source_file: str = ""
+    vehicle_model: str = ""
 
 
 def _is_bold(flags: int) -> bool:
@@ -38,7 +39,9 @@ def _is_bold(flags: int) -> bool:
     return bool(flags & 2**4)
 
 
-def load_pdf_bookmarks(pdf_path: str, *, source_file: str = "") -> list[BookmarkEntry]:
+def load_pdf_bookmarks(
+    pdf_path: str, *, source_file: str = "", vehicle_model: str = ""
+) -> list[BookmarkEntry]:
     """从 PDF outline（书签）提取目录项。page 为 1-based 页码。"""
     import fitz
 
@@ -62,6 +65,7 @@ def load_pdf_bookmarks(pdf_path: str, *, source_file: str = "") -> list[Bookmark
                 page=page,
                 path=">".join(stack),
                 source_file=source_file,
+                vehicle_model=vehicle_model,
             )
         )
     return entries

@@ -13,7 +13,9 @@ def format_context(docs: list[Document]) -> str:
         meta = doc.metadata
         page = meta.get("page", "?")
         section = meta.get("section_path", "")
-        header = f"[资料{i}] (P.{page} | {section})" if section else f"[资料{i}] (P.{page})"
+        model = meta.get("vehicle_model", "")
+        fields = [f for f in (model, f"P.{page}", section) if f]
+        header = f"[资料{i}] ({' | '.join(fields)})"
         parts.append(f"{header}\n{doc.page_content.strip()}")
     return "\n\n".join(parts) if parts else "（无检索到相关资料）"
 

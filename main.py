@@ -52,7 +52,7 @@ def cmd_info(args) -> None:
     idx = config.index_path()
     meta = idx / "meta.json"
     print("=== 车载 RAG 配置 ===")
-    print(f"车型:       {config.vehicle_model}")
+    print(f"车型数:     {len(config.model_ids)}")
     print(f"切分策略:   {config.chunk_strategy}")
     print(f"索引路径:   {idx}")
     print(f"Hybrid:     {config.get('retrieval', 'hybrid_search', 'enabled')}")
@@ -63,6 +63,11 @@ def cmd_info(args) -> None:
         with open(meta, encoding="utf-8") as f:
             m = json.load(f)
         print(f"已建库:     是 ({m.get('chunk_count', '?')} chunks)")
+        per_model = m.get("models", {})
+        if per_model:
+            print("车型 chunk 数:")
+            for mid, cnt in per_model.items():
+                print(f"  - {config.model_display(mid)}: {cnt}")
     else:
         print("已建库:     否 — 请先运行 python main.py build")
 
@@ -84,8 +89,8 @@ def cmd_chat(args) -> None:
     qa_log: list[str] = []
     log_cfg = config.raw.get("logging", {})
 
-    print(f"\n=== 车载智能问答 ({config.vehicle_model}) ===")
-    print("输入问题开始对话，/quit 退出，/clear 清空会话，/log 查看上轮检索，/config 查看配置\n")
+    print(f"\n=== 车载多车型智能问答（{len(config.model_ids)} 个车型）===")
+    print("输入问题开始对话，/quit 退出，/clear 清空会话，/log 查看上轮检索，/models 查看车型，/config 查看配置\n")
 
     while True:
         try:
@@ -106,8 +111,17 @@ def cmd_chat(args) -> None:
         if question == "/config":
             cmd_info(args)
             continue
+        if question == "/models":
+            print(f"  可用车型（{len(config.model_ids)}）：")
+            for mid in config.model_ids:
+                print(f"    - {config.model_display(mid)}")
+            if session.active_models:
+                print(f"  当前车型: {', '.join(config.model_display(m) for m in session.active_models)}")
+            continue
         if question == "/log" and session.last_retrieval:
             r = session.last_retrieval
+            if r.get("detected_models"):
+                print(f"  车型: {', '.join(config.model_display(m) for m in r['detected_models'])}")
             print(f"  关键词: {r['keyword']}")
             print(f"  改写: {r['rewritten']}")
             if r.get("bookmark_titles"):
@@ -129,9 +143,13 @@ def cmd_chat(args) -> None:
             continue
 
         result = retriever.retrieve(question, session)
+        if result.needs_clarification:
+            print("助手: 请问您咨询的是哪个车型？可输入 /models 查看可用车型。\n")
+            continue
         session.last_retrieval = {
             "keyword": result.keyword,
             "rewritten": result.rewritten_query,
+            "detected_models": result.detected_models,
             "cache_hits": result.cache_hits,
             "new_retrieved": result.new_retrieved,
             "pre_verify_count": result.pre_verify_count,

@@ -21,6 +21,7 @@ class SessionState:
     turns: list[tuple[str, str]] = field(default_factory=list)
     chunk_cache: OrderedDict[str, CachedChunk] = field(default_factory=OrderedDict)
     last_retrieval: dict | None = None
+    active_models: list[str] = field(default_factory=list)
 
     def add_turn(self, user: str, assistant: str) -> None:
         self.turns.append((user, assistant))
@@ -90,3 +91,4 @@ class SessionState:
         self.turns.clear()
         self.chunk_cache.clear()
         self.last_retrieval = None
+        self.active_models.clear()

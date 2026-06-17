@@ -1,10 +1,78 @@
 vehicle:
-  model: "M9-EVR-2025"
   doc_types:
     - owner_manual
+  # 文件名 → 车型映射表。id 作为 chunk 的 vehicle_model 标签与检索过滤键；
+  # name 为展示名（缺省取 id）；aliases 供按问句识别车型（匹配时大小写/空格不敏感）。
+  models:
+    - id: "M9-EVR-2025"
+      name: "问界 M9 EVR 2025"
+      file: "m9-2025-evr-product-manual-20260415.pdf"
+      aliases: ["M9EVR", "M9-EVR", "M9 EVR版"]
+    - id: "问界M6增程版"
+      file: "问界M6增程版使用说明书.pdf"
+      aliases: ["M6增程版", "M6增程"]
+    - id: "问界M6纯电版"
+      file: "问界M6纯电版使用说明书.pdf"
+      aliases: ["M6纯电版", "M6纯电"]
+    - id: "问界M7-2026款增程版"
+      name: "问界M7 2026款增程版"
+      file: "问界M72026款增程版使用说明书.pdf"
+      aliases: ["M72026款增程版", "M7 2026增程版", "M72026增程"]
+    - id: "问界M7-2026款纯电版"
+      name: "问界M7 2026款纯电版"
+      file: "问界M72026款纯电版使用说明书.pdf"
+      aliases: ["M72026款纯电版", "M7 2026纯电版", "M72026纯电"]
+    - id: "问界M7-Max智驾版"
+      name: "问界M7 Max智驾版"
+      file: "问界M7Max智驾版使用说明书.pdf"
+      aliases: ["M7Max智驾版", "M7Max版", "M7Max"]
+    - id: "问界M7-Plus标准版"
+      name: "问界M7 Plus标准版"
+      file: "问界M7Plus标准版使用说明书.pdf"
+      aliases: ["M7Plus标准版", "M7Plus版", "M7Plus"]
+    - id: "问界M7-Ultra-Pro"
+      name: "问界M7 Ultra-Pro"
+      file: "问界M7Ultra-Pro使用说明书.pdf"
+      aliases: ["M7Ultra-Pro", "M7Ultra", "M7Pro"]
+    - id: "问界M8增程版"
+      file: "问界M8增程版使用说明书.pdf"
+      aliases: ["M8增程版", "M8增程"]
+    - id: "问界M8纯电版"
+      file: "问界M8纯电版使用说明书.pdf"
+      aliases: ["M8纯电版", "M8纯电"]
+    - id: "问界M9-2025款增程版"
+      name: "问界M9 2025款增程版"
+      file: "问界M92025款增程版使用说明书.pdf"
+      aliases: ["M92025款增程版", "M9 2025增程版", "M92025增程"]
+    - id: "问界M9-2025款纯电版"
+      name: "问界M9 2025款纯电版"
+      file: "问界M92025款纯电版使用说明书.pdf"
+      aliases: ["M92025款纯电版", "M9 2025纯电版", "M92025纯电"]
+    - id: "问界M9-2026款增程版"
+      name: "问界M9 2026款增程版"
+      file: "问界M92026款增程版使用说明书.pdf"
+      aliases: ["M92026款增程版", "M9 2026增程版", "M92026增程"]
+    - id: "问界M9-2026款纯电版"
+      name: "问界M9 2026款纯电版"
+      file: "问界M92026款纯电版使用说明书.pdf"
+      aliases: ["M92026款纯电版", "M9 2026纯电版", "M92026纯电"]
+    - id: "问界M9增程版"
+      file: "问界M9增程版使用说明书.pdf"
+      aliases: ["M9增程版", "M9增程"]
+    - id: "问界M9纯电版"
+      file: "问界M9纯电版使用说明书.pdf"
+      aliases: ["M9纯电版", "M9纯电"]
+    - id: "问界新M5-2025款增程版"
+      name: "问界新M5 2025款增程版"
+      file: "问界新M52025款增程版使用说明书.pdf"
+      aliases: ["新M52025款增程版", "新M5 2025增程版", "新M52025增程"]
+    - id: "问界新M5-2025款纯电版"
+      name: "问界新M5 2025款纯电版"
+      file: "问界新M52025款纯电版使用说明书.pdf"
+      aliases: ["新M52025款纯电版", "新M5 2025纯电版", "新M52025纯电"]
 
 paths:
-  pdf_dir: "./data/manuals"
+  pdf_dir: "./doc"
   index_dir: "./indexes"
   log_dir: "./logs"
 
@@ -42,6 +110,7 @@ retrieval:
 
   bookmark_match:
     enabled: true          # 是否用 PDF 书签 + qwen2.5 匹配章节并召回 chunk
+    leaf_only: true        # 仅用叶子小节（最细粒度，如 车辆控制>空调）供 LLM 匹配
     max_matches: 3          # 最多匹配几个书签章节
     chunks_per_match: 2    # 每个书签章节最多取几个 chunk
     model: "qwen2.5:7b"
