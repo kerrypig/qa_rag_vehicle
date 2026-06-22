@@ -6,9 +6,15 @@
 只产出 input 候选，不生成最终 answer；不修改任何既有训练数据文件。
 
 用法示例：
+  # 自动识别/车型不明确
   python generate_aito_inputs_from_csv_rag.py \
       --source_csv doc/AutoMaster_TrainSet.csv --count 200 \
       --output data/aito_input_candidates_200.json --seed 42
+
+  # 锁定到指定车型：改写前缀与 RAG 检索都限定到该车型 chunk
+  python generate_aito_inputs_from_csv_rag.py --models M7 --count 200 \
+      --output data/aito_m7_inputs.json --seed 42
+  # 多车型 / 指定动力形式：--models "M9纯电,M8增程"
 
 依赖说明：仅用本地嵌入 + FAISS 检索（不调用云端 LLM，不受 DashScope 配额影响）。
 加 --verify 时会用本地 Ollama(qwen2.5:7b) 做检索相关性核对（更准但更慢）。
@@ -42,6 +48,7 @@ from aito_inputs.filters import (
     is_off_topic_intent,
     needs_field_diagnosis,
 )
+from aito_inputs.models import available_models, resolve_models
 from aito_inputs.powertrain import infer_scope, is_fuel_car_only, mentions_other_brand
 from aito_inputs.rewrite import rule_rewrite
 from config_loader import load_config
@@ -84,6 +91,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", default="data/aito_input_candidates.json", help="accepted 输出 JSON")
     p.add_argument("--rejected_output", default="data/aito_input_rejected.json", help="rejected 输出 JSON")
     p.add_argument("--seed", type=int, default=42, help="随机种子（可复现）")
+    p.add_argument("--models", default="",
+                   help="目标车型（逗号分隔，如 'M7' 或 'M9纯电,M8增程'）。"
+                        "指定后改写前缀与 RAG 检索都锁定到这些车型；留空=自动识别/车型不明确")
     p.add_argument("--rewrite", choices=["rule", "llm"], default="rule", help="改写方式（当前仅 rule）")
     p.add_argument("--verify", action="store_true", help="启用 Ollama 检索相关性核对（更准更慢）")
     p.add_argument("--min_score", type=float, default=0.45, help="弱检索向量相似度下限")
@@ -162,6 +172,20 @@ def main() -> None:
     retriever.load()
     verify_fn = build_verify_fn(args)
 
+    # 目标车型解析（指定后锁定改写前缀 + RAG 检索范围）
+    force_ids: list[str] = []
+    force_label = ""
+    if args.models.strip():
+        tokens = [t.strip() for t in args.models.split(",") if t.strip()]
+        force_ids, labels, unresolved = resolve_models(tokens, config)
+        if unresolved:
+            print(f"无法识别车型: {unresolved}\n可选车型：")
+            for name in available_models(config):
+                print(f"  - {name}")
+            sys.exit(1)
+        force_label = "、".join(labels)
+        print(f"锁定车型: {force_label} → {len(force_ids)} 个变体: {force_ids}")
+
     total_csv, questions = load_clean_questions(args)
     print(f"CSV 总问题数: {total_csv} | 清洗+去重后候选数: {len(questions)}")
 
@@ -189,9 +213,17 @@ def main() -> None:
             bar.set_postfix(ok=len(accepted), rej=len(rejected))
             continue
 
-        detected = detect_models(source_q, "", config)
-        scope = infer_scope(source_q, source_q, detected, config)
-        input_text = rule_rewrite(source_q, scope)
+        if force_ids:
+            # 指定车型：powertrain/wrong_premise 仍由 infer_scope 依据车型名推断，
+            # 但车型范围用简洁标签、且不再追问（车型已明确）。
+            scope = infer_scope(source_q, source_q, force_ids, config)
+            scope.vehicle_scope = force_label
+            scope.needs_clarification = False
+            input_text = rule_rewrite(source_q, scope, force=True)
+        else:
+            detected = detect_models(source_q, "", config)
+            scope = infer_scope(source_q, source_q, detected, config)
+            input_text = rule_rewrite(source_q, scope)
         if not input_text:
             continue
 
@@ -205,7 +237,8 @@ def main() -> None:
         is_safety = task_type == "安全提醒" or bool(_SAFETY_TAGS & set(tags))
 
         try:
-            result = retriever.retrieve_stateless(input_text)
+            result = retriever.retrieve_stateless(
+                input_text, force_models=force_ids or None)
         except Exception as e:  # noqa: BLE001 — 单条失败不应中断整批
             rejected.append({
                 "source_question": source_q, "input": input_text,

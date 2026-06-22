@@ -42,8 +42,12 @@ def _strip_other_brand_prefix(q: str) -> str:
     return q
 
 
-def rule_rewrite(question: str, scope: ScopeResult) -> str:
-    """把真实问题轻度改写为问界/AITO 场景下的自然问句。"""
+def rule_rewrite(question: str, scope: ScopeResult, *, force: bool = False) -> str:
+    """把真实问题轻度改写为问界/AITO 场景下的自然问句。
+
+    force=True 时（指定了目标车型），无论原句是否已含品牌，都强制加上
+    scope.vehicle_scope 作为车型前缀（如「我的问界M7，…」）。
+    """
     q = _clean(question)
     if not q:
         return ""
@@ -53,7 +57,7 @@ def rule_rewrite(question: str, scope: ScopeResult) -> str:
     q = _strip_other_brand_prefix(q)
     low = q.lower()
 
-    if any(tok in low for tok in _ALREADY_AITO):
+    if not force and any(tok in low for tok in _ALREADY_AITO):
         return q  # 已自带品牌/车型，保持原貌
 
     # 构造车型前缀

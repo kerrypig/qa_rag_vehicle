@@ -5,6 +5,7 @@ from aito_inputs.answerability import Decision, judge, max_score, summarize_evid
 from aito_inputs.candidate import build_candidate, build_rejected
 from aito_inputs.classify import classify_task_type, risk_tags
 from aito_inputs.dedup import dedup_questions, jaccard, normalize
+from aito_inputs.models import resolve_models
 from aito_inputs.filters import (
     describes_specific_other_vehicle,
     is_ice_specific,
@@ -21,10 +22,27 @@ from aito_inputs.rewrite import rule_rewrite
 
 
 # ---- 测试替身 ----
+_MODELS = [
+    {"id": "问界M7-2026款增程版", "name": "问界M7 2026款增程版", "aliases": ["M72026款增程版", "M7 2026增程版"]},
+    {"id": "问界M7-2026款纯电版", "name": "问界M7 2026款纯电版", "aliases": ["M72026款纯电版"]},
+    {"id": "问界M7-Max智驾版", "name": "问界M7 Max智驾版", "aliases": ["M7Max"]},
+    {"id": "问界M9-2025款纯电版", "name": "问界M9 2025款纯电版", "aliases": ["M92025款纯电版"]},
+    {"id": "问界M9纯电版", "name": "问界M9纯电版", "aliases": ["M9纯电"]},
+    {"id": "问界M8增程版", "name": "问界M8增程版", "aliases": ["M8增程"]},
+]
+
+
 class FakeConfig:
-    """最小 config：infer_scope 只用到 model_display。"""
+    """最小 config：infer_scope 用 model_display，resolve_models 用 models。"""
+
+    @property
+    def models(self) -> list[dict]:
+        return _MODELS
 
     def model_display(self, mid: str) -> str:
+        for m in _MODELS:
+            if m["id"] == mid:
+                return m.get("name", mid)
         return mid
 
 
@@ -95,6 +113,35 @@ def test_other_brand():
     assert mentions_other_brand("我的问界M9") is False
 
 
+# ---- models ----
+def test_resolve_family_m7():
+    ids, labels, unresolved = resolve_models(["M7"], FakeConfig())
+    assert set(ids) == {"问界M7-2026款增程版", "问界M7-2026款纯电版", "问界M7-Max智驾版"}
+    assert labels == ["问界M7"] and unresolved == []
+
+
+def test_resolve_m9_pure_electric():
+    ids, labels, unresolved = resolve_models(["M9纯电"], FakeConfig())
+    assert set(ids) == {"问界M9-2025款纯电版", "问界M9纯电版"}
+    assert unresolved == []
+
+
+def test_resolve_multiple_tokens():
+    ids, labels, _ = resolve_models(["M8增程", "M9纯电"], FakeConfig())
+    assert "问界M8增程版" in ids and "问界M9纯电版" in ids
+    assert labels == ["问界M8增程", "问界M9纯电"]
+
+
+def test_resolve_unresolved():
+    ids, labels, unresolved = resolve_models(["M3"], FakeConfig())
+    assert ids == [] and unresolved == ["M3"]
+
+
+def test_resolve_keeps_aito_prefix_label():
+    _, labels, _ = resolve_models(["问界M9纯电版"], FakeConfig())
+    assert labels == ["问界M9纯电版"]
+
+
 # ---- rewrite ----
 def test_rewrite_specific_model_prefix():
     scope = ScopeResult("问界M9增程版", "增程", False)
@@ -124,6 +171,12 @@ def test_rewrite_strips_other_brand_prefix():
 
 def test_rewrite_empty():
     assert rule_rewrite("   ", ScopeResult("车型不明确", "不明确", False)) == ""
+
+
+def test_rewrite_force_overrides_already_aito():
+    scope = ScopeResult("问界M7", "增程", False)
+    out = rule_rewrite("M9充电怎么看是否在充", scope, force=True)
+    assert out.startswith("我的问界M7，")
 
 
 # ---- dedup ----
