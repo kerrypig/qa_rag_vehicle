@@ -8,10 +8,13 @@ from aito_inputs.dedup import dedup_questions, jaccard, normalize
 from aito_inputs.models import resolve_models
 from aito_inputs.filters import (
     describes_specific_other_vehicle,
+    is_diagnosis_seeking,
     is_ice_specific,
     is_off_topic_intent,
+    is_safety_critical,
     needs_field_diagnosis,
 )
+from aito_inputs.grounding import core_families, evidence_covers
 from aito_inputs.powertrain import (
     ScopeResult,
     infer_scope,
@@ -47,8 +50,9 @@ class FakeConfig:
 
 
 class Doc:
-    def __init__(self, section_path: str):
+    def __init__(self, section_path: str, content: str = ""):
         self.metadata = {"section_path": section_path}
+        self.page_content = content
 
 
 # ---- classify ----
@@ -229,61 +233,123 @@ def test_needs_field_diagnosis():
 def test_is_off_topic_intent():
     assert is_off_topic_intent("6万左右买什么车好呢") is True
     assert is_off_topic_intent("这是哪款车的灯") is True
+    assert is_off_topic_intent("补漆要多少钱") is True
     assert is_off_topic_intent("胎压灯亮了还能开吗") is False
 
 
+def test_is_diagnosis_seeking():
+    assert is_diagnosis_seeking("高速踩刹车抖动") is True
+    assert is_diagnosis_seeking("避震器异响是怎么回事") is True
+    assert is_diagnosis_seeking("空调压缩机没电") is True
+    assert is_diagnosis_seeking("油表显示不准") is True
+    assert is_diagnosis_seeking("大灯不亮怎么解决") is False
+    assert is_diagnosis_seeking("充电枪拔不出来怎么办") is False
+
+
+def test_is_safety_critical():
+    assert is_safety_critical("刹车失灵") is True
+    assert is_safety_critical("安全气囊灯亮") is True
+    assert is_safety_critical("怎么连接蓝牙") is False
+
+
+# ---- grounding ----
+def test_core_families():
+    fams = core_families("我的问界M7，前后轮胎调换做动平衡可以吗")
+    assert "轮胎" in fams
+
+
+def test_evidence_covers_hit():
+    docs = [Doc("保养维护>轮胎保养", "前后轮胎可调换，动平衡建议四轮一起做")]
+    covered, non_generic = evidence_covers(["轮胎"], docs)
+    assert covered is True and non_generic is True
+
+
+def test_evidence_covers_offtopic():
+    docs = [Doc("车辆控制>座椅", "座椅加热通风调节"), Doc("驾驶车辆>驾驶设置", "驾驶模式设置")]
+    covered, non_generic = evidence_covers(["轮胎"], docs)
+    assert covered is False and non_generic is False
+
+
+def test_evidence_covers_only_generic():
+    docs = [Doc("前言", "本手册介绍轮胎相关注意事项总则")]
+    covered, non_generic = evidence_covers(["轮胎"], docs)
+    assert covered is True and non_generic is False
+
+
 # ---- answerability ----
+def _doc(sp, content):
+    return Doc(sp, content)
+
+
 def test_judge_fuel_car_only_rejected():
-    d = judge([Doc("x")], {"a": 0.9}, is_safety=False, needs_clarification=False,
-              wrong_premise=False, is_fuel_car_only=True, min_chunks=2, min_score=0.45)
+    d = judge([Doc("x")], {"a": 0.9}, covered=True, non_generic_hit=True,
+              safety_critical=False, needs_clarification=False, wrong_premise=False,
+              is_fuel_car_only=True, min_chunks=2, min_score=0.45)
     assert d.accepted is False and d.answerability == "not_answerable"
 
 
 def test_judge_no_evidence_rejected():
-    d = judge([], {}, is_safety=False, needs_clarification=False, wrong_premise=False,
-              is_fuel_car_only=False, min_chunks=2, min_score=0.45)
+    d = judge([], {}, covered=False, non_generic_hit=False, safety_critical=False,
+              needs_clarification=False, wrong_premise=False, is_fuel_car_only=False,
+              min_chunks=2, min_score=0.45)
     assert d.accepted is False and "检索不到" in d.reason
 
 
 def test_judge_strong_answerable():
-    docs = [Doc("充电>充电口"), Doc("充电>故障")]
-    d = judge(docs, {"a": 0.6, "b": 0.55}, is_safety=False, needs_clarification=False,
-              wrong_premise=False, is_fuel_car_only=False, min_chunks=2, min_score=0.45)
+    docs = [_doc("保养维护>轮胎保养", "轮胎可调换"), _doc("车辆规格>轮胎规格", "胎压标准")]
+    d = judge(docs, {"a": 0.6, "b": 0.55}, covered=True, non_generic_hit=True,
+              safety_critical=False, needs_clarification=False, wrong_premise=False,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=2)
     assert d.accepted and d.answerability == "answerable_by_rag" and d.expected_behavior == "直接回答"
 
 
-def test_judge_safety_fallback():
-    docs = [Doc("故障救援>安全气囊")]
-    d = judge(docs, {"a": 0.40}, is_safety=True, needs_clarification=False,
-              wrong_premise=False, is_fuel_car_only=False, min_chunks=2, min_score=0.45)
+def test_judge_uncovered_rejected():
+    """检索到东西但未命中核心主题 → 剔除（核心修复点）。"""
+    docs = [_doc("车辆控制>座椅", "座椅"), _doc("驾驶车辆>驾驶设置", "驾驶模式")]
+    d = judge(docs, {"a": 0.6, "b": 0.55}, covered=False, non_generic_hit=False,
+              safety_critical=False, needs_clarification=False, wrong_premise=False,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=2)
+    assert d.accepted is False and "未命中" in d.reason
+
+
+def test_judge_uncovered_safety_fallback():
+    docs = [_doc("前言", "x"), _doc("故障救援>SOS 硬件下电", "y")]
+    d = judge(docs, {"a": 0.5, "b": 0.5}, covered=False, non_generic_hit=False,
+              safety_critical=True, needs_clarification=False, wrong_premise=False,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=1)
     assert d.accepted and d.answerability == "safety_fallback_supported"
 
 
+def test_judge_generic_only_rejected():
+    """覆盖但只命中泛章节 → 不算 answerable。"""
+    docs = [_doc("前言", "轮胎"), _doc("随车工具", "轮胎")]
+    d = judge(docs, {"a": 0.6, "b": 0.5}, covered=True, non_generic_hit=False,
+              safety_critical=False, needs_clarification=False, wrong_premise=False,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=2)
+    assert d.accepted is False
+
+
 def test_judge_needs_clarification():
-    docs = [Doc("充电>设置")]
-    d = judge(docs, {"a": 0.40}, is_safety=False, needs_clarification=True,
-              wrong_premise=False, is_fuel_car_only=False, min_chunks=2, min_score=0.45)
+    docs = [_doc("充电和供电>充电设置", "充电上限"), _doc("充电和供电>充电", "充电")]
+    d = judge(docs, {"a": 0.6, "b": 0.5}, covered=True, non_generic_hit=True,
+              safety_critical=False, needs_clarification=True, wrong_premise=False,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=2)
     assert d.accepted and d.answerability == "needs_clarification"
 
 
 def test_judge_wrong_premise():
-    docs = [Doc("增程>加油"), Doc("纯电>充电")]
-    d = judge(docs, {"a": 0.6, "b": 0.5}, is_safety=False, needs_clarification=False,
-              wrong_premise=True, is_fuel_car_only=False, min_chunks=2, min_score=0.45)
+    docs = [_doc("充电和供电>充电", "加油 充电"), _doc("动力>增程", "增程器")]
+    d = judge(docs, {"a": 0.6, "b": 0.5}, covered=True, non_generic_hit=True,
+              safety_critical=False, needs_clarification=False, wrong_premise=True,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=2)
     assert d.accepted and d.expected_behavior == "纠正错误前提"
 
 
-def test_judge_low_score_rejected():
-    d = judge([Doc("x")], {"a": 0.2}, is_safety=False, needs_clarification=False,
-              wrong_premise=False, is_fuel_car_only=False, min_chunks=2, min_score=0.45)
-    assert d.accepted is False
-
-
-def test_judge_relevant_count_zero_rejects_strong():
-    docs = [Doc("a"), Doc("b")]
-    d = judge(docs, {"a": 0.6, "b": 0.5}, is_safety=False, needs_clarification=False,
-              wrong_premise=False, is_fuel_car_only=False, min_chunks=2, min_score=0.45,
-              relevant_count=0)
+def test_judge_relevant_count_zero_rejects():
+    docs = [_doc("保养维护>轮胎保养", "轮胎"), _doc("车辆规格>轮胎规格", "胎压")]
+    d = judge(docs, {"a": 0.6, "b": 0.5}, covered=True, non_generic_hit=True,
+              safety_critical=False, needs_clarification=False, wrong_premise=False,
+              is_fuel_car_only=False, min_chunks=2, min_score=0.45, relevant_count=0)
     assert d.accepted is False
 
 

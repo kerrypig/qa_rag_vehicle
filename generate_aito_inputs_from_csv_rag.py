@@ -44,10 +44,13 @@ from aito_inputs.classify import classify_task_type, risk_tags
 from aito_inputs.dedup import jaccard, normalize
 from aito_inputs.filters import (
     describes_specific_other_vehicle,
+    is_diagnosis_seeking,
     is_ice_specific,
     is_off_topic_intent,
+    is_safety_critical,
     needs_field_diagnosis,
 )
+from aito_inputs.grounding import FAMILIES, core_families, evidence_covers
 from aito_inputs.models import available_models, resolve_models
 from aito_inputs.powertrain import infer_scope, is_fuel_car_only, mentions_other_brand
 from aito_inputs.rewrite import rule_rewrite
@@ -65,8 +68,6 @@ LIGHT_OVERRIDES = {
     "verification.enabled": False,
 }
 
-# 触发「安全兜底」的主题标签
-_SAFETY_TAGS = {"安全停车"}
 # 太短/无意义问题的最小长度
 _MIN_Q_LEN = 5
 # 近重复阈值（与已 accepted 问题的 bigram Jaccard ≥ 此值则跳过）
@@ -95,7 +96,8 @@ def parse_args() -> argparse.Namespace:
                    help="目标车型（逗号分隔，如 'M7' 或 'M9纯电,M8增程'）。"
                         "指定后改写前缀与 RAG 检索都锁定到这些车型；留空=自动识别/车型不明确")
     p.add_argument("--rewrite", choices=["rule", "llm"], default="rule", help="改写方式（当前仅 rule）")
-    p.add_argument("--verify", action="store_true", help="启用 Ollama 检索相关性核对（更准更慢）")
+    p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True,
+                   help="Ollama 检索相关性复核（默认开启，更准更慢；--no-verify 关闭）")
     p.add_argument("--min_score", type=float, default=0.45, help="弱检索向量相似度下限")
     p.add_argument("--min_chunks", type=int, default=2, help="有效 chunk 下限")
     p.add_argument("--max_attempts", type=int, default=0, help="最多处理候选数；0=count*8")
@@ -139,7 +141,9 @@ def _pre_reject_reason(source_q: str) -> str:
     if is_ice_specific(source_q):
         return "内燃机/柴油/传统传动专属特征，无法迁移到问界新能源车"
     if is_off_topic_intent(source_q):
-        return "购车/选车/价格等元问题，非车主手册可答范围"
+        return "购车/选车/价格/配件采购等元问题，非车主手册可答范围"
+    if is_diagnosis_seeking(source_q):
+        return "维修诊断类（描述物理故障症状求因），手册无法给出具体原因"
     return ""
 
 
@@ -234,7 +238,7 @@ def main() -> None:
         task_type = classify_task_type(source_q)
         tags = risk_tags(f"{source_q} {input_text}")
         fuel_only = is_fuel_car_only(f"{source_q} {input_text}")
-        is_safety = task_type == "安全提醒" or bool(_SAFETY_TAGS & set(tags))
+        safety_critical = is_safety_critical(f"{source_q} {input_text}")
 
         try:
             result = retriever.retrieve_stateless(
@@ -247,6 +251,11 @@ def main() -> None:
             bar.set_postfix(ok=len(accepted), rej=len(rejected))
             continue
 
+        # 词汇覆盖：检索证据是否真正命中问题核心主题
+        families = core_families(input_text)
+        covered, non_generic_hit = evidence_covers(families, result.docs)
+        prefer_terms = [t for fam in families for t in FAMILIES[fam]]
+
         relevant_count = None
         if verify_fn and result.docs:
             try:
@@ -256,12 +265,15 @@ def main() -> None:
 
         decision = judge(
             result.docs, result.scores,
-            is_safety=is_safety,
+            covered=covered,
+            non_generic_hit=non_generic_hit,
+            safety_critical=safety_critical,
             needs_clarification=scope.needs_clarification,
             wrong_premise=scope.wrong_premise,
             is_fuel_car_only=fuel_only,
             min_chunks=args.min_chunks, min_score=args.min_score,
             relevant_count=relevant_count,
+            evidence_prefer=prefer_terms,
         )
 
         if decision.accepted:
