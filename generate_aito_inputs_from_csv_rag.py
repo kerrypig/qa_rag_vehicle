@@ -16,8 +16,9 @@
       --output data/aito_m7_inputs.json --seed 42
   # 多车型 / 指定动力形式：--models "M9纯电,M8增程"
 
-依赖说明：仅用本地嵌入 + FAISS 检索（不调用云端 LLM，不受 DashScope 配额影响）。
-加 --verify 时会用本地 Ollama(qwen2.5:7b) 做检索相关性核对（更准但更慢）。
+依赖说明：默认仅用本地嵌入 + FAISS 检索（在 --models 指定车型的 chunk 集合内匹配
+问题，靠向量相似度分判可答性，不调任何 LLM，快）。加 --verify 时，对每条存活候选
+额外调 1 次本地 Ollama(qwen2.5:7b) 做可答性复核（能/不能），更准但更慢。
 """
 from __future__ import annotations
 
@@ -96,9 +97,10 @@ def parse_args() -> argparse.Namespace:
                    help="目标车型（逗号分隔，如 'M7' 或 'M9纯电,M8增程'）。"
                         "指定后改写前缀与 RAG 检索都锁定到这些车型；留空=自动识别/车型不明确")
     p.add_argument("--rewrite", choices=["rule", "llm"], default="rule", help="改写方式（当前仅 rule）")
-    p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True,
-                   help="Ollama 检索相关性复核（默认开启，更准更慢；--no-verify 关闭）")
-    p.add_argument("--min_score", type=float, default=0.45, help="弱检索向量相似度下限")
+    p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=False,
+                   help="单次 LLM 可答性复核（默认关闭=纯向量分，更快；开启=每条 1 次 Ollama 判定，更准更慢）")
+    p.add_argument("--min_score", type=float, default=0.5,
+                   help="向量相似度下限（核心匹配门槛；调高更严，调低更宽）")
     p.add_argument("--min_chunks", type=int, default=2, help="有效 chunk 下限")
     p.add_argument("--max_attempts", type=int, default=0, help="最多处理候选数；0=count*8")
     p.add_argument("--csv_encoding", default="gb18030")
@@ -148,14 +150,17 @@ def _pre_reject_reason(source_q: str) -> str:
 
 
 def build_verify_fn(args):
-    """按需返回一个 (question, docs, scores) -> relevant_count 的核对函数。"""
+    """按需返回单次 LLM 可答性判定函数 (question, docs, scores) -> 1/0。
+
+    用 aito_inputs.llm_judge.can_answer：每条候选只调 1 次 Ollama（比逐 chunk 快约 5 倍）。
+    返回 1=能回答 / 0=不能，复用 judge 里 relevant_count>=1 的强证据逻辑。
+    """
     if not args.verify:
         return None
-    from retrieve.verifier import verify_chunks
+    from aito_inputs.llm_judge import can_answer
 
     def _verify(question, docs, scores):
-        kept = verify_chunks(question, docs, scores=scores, min_keep=0)
-        return len(kept)
+        return 1 if can_answer(question, docs) else 0
 
     return _verify
 

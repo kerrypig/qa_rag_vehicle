@@ -15,6 +15,7 @@ from aito_inputs.filters import (
     needs_field_diagnosis,
 )
 from aito_inputs.grounding import core_families, evidence_covers
+from aito_inputs.llm_judge import build_context, parse_verdict
 from aito_inputs.powertrain import (
     ScopeResult,
     infer_scope,
@@ -274,6 +275,21 @@ def test_evidence_covers_only_generic():
     docs = [Doc("前言", "本手册介绍轮胎相关注意事项总则")]
     covered, non_generic = evidence_covers(["轮胎"], docs)
     assert covered is True and non_generic is False
+
+
+# ---- llm_judge ----
+def test_parse_verdict():
+    assert parse_verdict("能") is True
+    assert parse_verdict("能回答") is True
+    assert parse_verdict("不能") is False
+    assert parse_verdict("不能回答，资料无关") is False
+    assert parse_verdict("无法确定") is False
+
+
+def test_build_context():
+    docs = [Doc("保养维护>轮胎保养", "轮胎可调换")]
+    ctx = build_context(docs)
+    assert "轮胎保养" in ctx and "轮胎可调换" in ctx
 
 
 # ---- answerability ----
