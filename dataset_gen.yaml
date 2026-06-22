@@ -1,0 +1,38 @@
+dataset_gen:
+  input_csv: "./doc/AutoMaster_TrainSet.csv"
+  csv_encoding: "gb18030"          # CSV 为 GBK 系编码，UTF-8 读会乱码
+  base_config: "./config.yaml"     # 复用既有检索/嵌入配置
+  output_json: "./ito_lora_dataset.json"
+  output_meta: "./ito_lora_dataset.meta.jsonl"
+
+  sample_size: 600                 # 尝试候选行的上限（含被跳过的）
+  target_size: 300                 # 目标成功条数；达到即停（200~400 区间）
+  random_seed: 42
+
+  # 新能源通用场景关键词（命中任一即保留）
+  keep_keywords: [胎压, 空调, 异响, 蓝牙, 车机, 雷达, 钥匙, 充电, 刹车,
+                  座椅, 车门, 后视镜, 灯光, 仪表, 续航, 充电桩, 中控]
+
+  # 弱检索判定（任一不满足即跳过该行）
+  min_chunks: 2
+  min_score: 0.30
+
+  task_types: [直接问答, 步骤指导, 故障分析, 术语解释, 安全提醒]
+
+  backend: "local"                 # local | cloud
+  local:
+    model: "qwen2.5:7b"
+    temperature: 0.3
+    num_predict: 1024
+    timeout_s: 120
+    retries: 2
+  # cloud 后端复用 config.yaml 的 generation 段
+
+  checkpoint_every: 10
+
+  # 关闭检索中所有 Ollama 步骤 → 轻量 hybrid（向量+BM25）
+  overrides:
+    query_rewrite.enabled: false
+    retrieval.keyword_search.enabled: false
+    retrieval.bookmark_match.enabled: false
+    verification.enabled: false
