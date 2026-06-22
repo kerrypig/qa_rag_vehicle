@@ -67,14 +67,16 @@ dataset_gen:
   checkpoint_every: 10
 
   # 覆盖到 config.yaml，实现「轻量检索」（单条问题无需指代消解）
+  # 注意：keyword_search 也走 Ollama（extract_keyword），必须一并关闭，
+  # 否则 _prepare_queries 仍会调 Ollama。两者全关时检索零 Ollama 调用。
   overrides:
     query_rewrite.enabled: false
+    retrieval.keyword_search.enabled: false
     retrieval.bookmark_match.enabled: false
     verification.enabled: false
-    retrieval.keyword_search.enabled: true
 ```
 
-覆盖机制：`load_config` 后，在 `config.raw` 上按点路径写入 `overrides`，再构造 `Retriever`。检索因此只跑 hybrid 向量+BM25，单行约 1 次 Ollama 调用以内（生成另算）。
+覆盖机制：`load_config` 后，在 `config.raw` 上按点路径写入 `overrides`，再构造 `Retriever`。检索因此只跑 hybrid 向量+BM25（rewritten 路径，query=原问题），检索阶段零 Ollama 调用，生成另算。
 
 ## 数据流（每行）
 
