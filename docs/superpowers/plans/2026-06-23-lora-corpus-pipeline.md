@@ -45,6 +45,8 @@
 `config/dataset_gen.yaml`：
 ```yaml
 target_size: 100
+oversample_factor: 2.5     # 候选计划量 = ceil(target_size * oversample_factor)，应对回检/质检拒绝
+max_attempts: 400          # 处理候选数硬上限，避免无限循环
 backend: cloud
 judge_backend: local
 local_model: "qwen2.5:7b"
@@ -767,6 +769,15 @@ def test_extract_garbage_raises():
 def test_extract_broken_json_raises():
     with pytest.raises(GenerationError):
         extract_json('{"output": ')
+
+def test_extract_nested_braces_not_greedy():
+    # 贪婪正则会把后面的 } 一起吞掉；brace-balanced 应只取第一个完整对象
+    raw = '前言 {"output": {"a": 1}} 结尾 {"b": 2}'
+    assert extract_json(raw) == {"output": {"a": 1}}
+
+def test_extract_fenced_priority_over_braces():
+    raw = '忽略这个 {x} ```json\n{"label": "full"}\n``` 尾部'
+    assert extract_json(raw) == {"label": "full"}
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -828,15 +839,46 @@ def make_backend(name: str, config, dg_config) -> Backend:
     return LocalBackend(dg_config.get("local_model", default="qwen2.5:7b"))
 
 
-_JSON_RE = re.compile(r"\{.*\}", re.S)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
+
+
+def _balanced_object(text: str) -> str | None:
+    """返回第一个括号平衡的 {...} 子串（考虑字符串内转义），无则 None。"""
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        start = text.find("{", start + 1)
+    return None
 
 
 def extract_json(text: str) -> dict:
-    m = _JSON_RE.search(text)
-    if not m:
+    # 1) fenced ```json {...}``` 优先
+    m = _FENCE_RE.search(text)
+    candidate = m.group(1) if m else _balanced_object(text)
+    if candidate is None:
         raise GenerationError(f"json_parse_failed: 无 JSON 片段: {text[:80]!r}")
     try:
-        return json.loads(m.group(0))
+        return json.loads(candidate)
     except json.JSONDecodeError as e:
         raise GenerationError(f"json_parse_failed: {e}") from e
 ```
@@ -1098,6 +1140,15 @@ def test_foreign_vehicles_detected():
     foreign = foreign_vehicles("问界M7 2026增程版也支持", "问界M9-2026款增程版", CONFIG)
     assert foreign  # 非空
 
+def test_foreign_vehicles_bound_alias_not_flagged():
+    # 用别名提到绑定车型本身 → detect_models 解析回同一 id → 不算 foreign
+    foreign = foreign_vehicles("M92026增程版也支持该功能", "问界M9-2026款增程版", CONFIG)
+    assert foreign == []
+
+def test_normalize_question_dedup_equivalence():
+    from lora_gen.quality import normalize_question
+    assert normalize_question(" 问界M9 空调 怎么 开？") == normalize_question("问界M9空调怎么开?")
+
 def test_run_quality_vehicle_conflict_checks_input_and_output():
     s = Sample(instruction="i", input="问界M7 2026增程版怎么样", output="正常使用即可",
                )
@@ -1192,8 +1243,17 @@ def unsafe_without_guard(output: str) -> bool:
 
 
 def foreign_vehicles(text: str, model_id: str, config) -> list[str]:
+    # detect_models 已把别名/展示名归一化为 model_id；故与 bound id 比对即可，
+    # 绑定车型的别名会解析回同一 id，不会误判为 foreign。
     detected = detect_models(text, "", config)
     return [m for m in detected if m != model_id]
+
+
+def normalize_question(q: str) -> str:
+    """去空白 + 全角标点折叠 + 小写，用于 normalized exact 去重。"""
+    s = re.sub(r"\s+", "", q).lower()
+    trans = str.maketrans("？！，。：；（）", "?!,.:;()")
+    return s.translate(trans)
 
 
 def run_quality(
@@ -1437,6 +1497,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1444,11 +1505,10 @@ from pathlib import Path
 from lora_gen.answerability import RetrievedChunk, Verdict, evaluate
 from lora_gen.backends import GenerationError, extract_json
 from lora_gen.chunks import Chunk, load_corpus, usable_chunks_by_model
-from lora_gen.export import build_report
 from lora_gen.prompts import (
     answer_gen_prompt, judge_prompt, pick_instruction, question_gen_prompt,
 )
-from lora_gen.quality import run_quality
+from lora_gen.quality import normalize_question, run_quality
 from lora_gen.registry import build_plan
 from lora_gen.schema import Rejected, Sample, SampleMeta
 
@@ -1515,9 +1575,11 @@ def run(
     by_model = usable_chunks_by_model(
         chunks, min_chars=dg.chunks["min_chars"], blacklist=dg.chunks["section_blacklist"]
     )
+    # 过采样：候选量 = ceil(target * oversample_factor)，以 accepted 达标为目标
+    plan_target = math.ceil(dg.target_size * dg.raw["oversample_factor"])
     plan = build_plan(
         by_model,
-        target=dg.target_size,
+        target=plan_target,
         per_vehicle_min=dg.raw["per_vehicle_min"],
         per_vehicle_max=dg.raw["per_vehicle_max"],
         vehicle_subset=dg.raw["vehicle_subset"],
@@ -1529,13 +1591,20 @@ def run(
     done = load_done_qids(checkpoint)
     result = RunResult()
     partial_count = 0
+    attempts = 0
+    seen_norm: set[str] = set()
     retries = dg.raw["generation_retries"]
+    max_attempts = dg.raw["max_attempts"]
     a_cfg = dg.answerability
 
     for item in plan:
+        # 目标：accepted 达到 target_size 即停；attempts 达上限兜底
+        if len(result.accepted) >= dg.target_size or attempts >= max_attempts:
+            break
         qid = make_qid(item.model_id, item.chunk_id, item.task_type)
         if qid in done:
             continue
+        attempts += 1
         seed = chunk_by_id[item.chunk_id]
         model_display = config.model_display(item.model_id)
         base = Rejected(
@@ -1566,6 +1635,15 @@ def run(
             append_checkpoint(checkpoint, qid, "rejected:missing_required_field")
             continue
         base.question = question
+
+        # 1b) normalized exact 去重（在检索前拦截，省 LLM/检索开销）
+        nq = normalize_question(question)
+        if nq in seen_norm:
+            base.reject_stage, base.reject_reason = "generation", "duplicate"
+            result.rejected.append(base)
+            append_checkpoint(checkpoint, qid, "rejected:duplicate")
+            continue
+        seen_norm.add(nq)
 
         # 2) RAG 回检（单车型）
         rr = retriever.retrieve_stateless(question, trace=True, force_models=[item.model_id])
@@ -1672,7 +1750,191 @@ git commit -m "feat(lora_gen): pipeline 编排与断点续传"
 
 ---
 
-### Task 10: CLI 与 provenance
+### Task 10: config 接口探测 + 接口自检脚本
+
+**Files:**
+- Create: `lora_gen/compat.py`, `scripts/check_interfaces.py`
+- Test: `tests/lora_gen/test_compat.py`
+
+- [ ] **Step 1: 写失败测试**
+
+`tests/lora_gen/test_compat.py`：
+```python
+from pathlib import Path
+from config_loader import load_config
+from lora_gen.compat import probe_config, ConfigAdapter
+
+class _Bare:
+    """缺 index_path / model_display 的最小 config。"""
+    def __init__(self):
+        self.models = [{"id": "M1", "name": "显示名"}]
+        self.doc_types = ["owner_manual"]
+        self.raw = {"chunking": {"strategy": "hierarchy"}}
+        self.index_dir = Path("indexes")
+    def model_aliases(self):
+        return [("M1", "M1")]
+
+def test_probe_passthrough_when_complete():
+    cfg = load_config()
+    assert probe_config(cfg) is cfg  # 真实 config 已完整 → 原样返回
+
+def test_probe_wraps_when_missing():
+    wrapped = probe_config(_Bare())
+    assert isinstance(wrapped, ConfigAdapter)
+    assert wrapped.model_display("M1") == "显示名"
+    assert wrapped.index_path().as_posix().endswith("hierarchy/corpus")
+
+def test_probe_hard_missing_raises():
+    import pytest
+    class _NoModels:
+        pass
+    with pytest.raises(AttributeError):
+        probe_config(_NoModels())
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+Run: `../.venv/Scripts/python.exe -m pytest tests/lora_gen/test_compat.py -v`
+Expected: FAIL（ModuleNotFoundError）
+
+- [ ] **Step 3: 实现 compat.py**
+
+`lora_gen/compat.py`：
+```python
+"""config 接口探测：确认所需接口存在，缺失则用 fallback adapter 补齐。"""
+from __future__ import annotations
+
+from pathlib import Path
+
+REQUIRED = ["index_path", "model_display", "model_aliases", "models", "doc_types"]
+# 可被 adapter 补齐的软缺失；其余缺失视为硬错误。
+SOFT = {"index_path", "model_display"}
+
+
+class ConfigAdapter:
+    """在原 config 上补齐缺失接口的轻量包装；其余属性透传。"""
+
+    def __init__(self, config):
+        self._c = config
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+    def model_display(self, model_id: str) -> str:
+        for m in self._c.models:
+            if m.get("id") == model_id:
+                return m.get("name", model_id)
+        return model_id
+
+    def index_path(self, strategy: str | None = None) -> Path:
+        s = strategy or self._c.raw["chunking"]["strategy"]
+        return Path(self._c.index_dir) / s / "corpus"
+
+
+def probe_config(config):
+    missing = [name for name in REQUIRED if not hasattr(config, name)]
+    if not missing:
+        return config
+    hard = [m for m in missing if m not in SOFT]
+    if hard:
+        raise AttributeError(f"config 缺少必需接口且无 fallback: {hard}")
+    return ConfigAdapter(config)
+```
+
+- [ ] **Step 4: 运行确认通过**
+
+Run: `../.venv/Scripts/python.exe -m pytest tests/lora_gen/test_compat.py -v`
+Expected: PASS（3 passed）
+
+- [ ] **Step 5: 实现接口自检脚本**
+
+`scripts/check_interfaces.py`：
+```python
+"""smoke 前接口自检：corpus path / detect_models / Retriever / QwenClient / Ollama。"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config_loader import load_config
+from lora_gen.compat import probe_config
+from lora_gen.dgconfig import load_dg_config
+
+
+def check() -> int:
+    ok = True
+    config = probe_config(load_config())
+    dg = load_dg_config()
+
+    idx = config.index_path()
+    corpus = idx / "bm25_corpus.json"
+    print(f"[corpus] {corpus} exists={corpus.exists()}")
+    ok &= corpus.exists()
+
+    try:
+        from retrieve.model_router import detect_models
+
+        d = detect_models("问界M9 2026增程版空调", "", config)
+        print(f"[detect_models] -> {d}")
+        ok &= isinstance(d, list)
+    except Exception as e:  # noqa: BLE001
+        print(f"[detect_models] FAIL {e}")
+        ok = False
+
+    try:
+        from retrieve.pipeline import Retriever
+
+        r = Retriever(config, idx)
+        r.load()
+        print("[Retriever] load ok")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Retriever] FAIL {e}")
+        ok = False
+
+    if "cloud" in (dg.backend, dg.judge_backend):
+        try:
+            from generate.qwen_client import QwenClient
+
+            QwenClient(config)
+            print("[QwenClient] init ok")
+        except Exception as e:  # noqa: BLE001
+            print(f"[QwenClient] FAIL {e}")
+            ok = False
+    if "local" in (dg.backend, dg.judge_backend):
+        try:
+            import ollama
+
+            ollama.list()
+            print("[ollama] reachable")
+        except Exception as e:  # noqa: BLE001
+            print(f"[ollama] FAIL {e}")
+            ok = False
+
+    print("RESULT:", "OK" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(check())
+```
+
+- [ ] **Step 6: 运行自检**
+
+Run: `../.venv/Scripts/python.exe scripts/check_interfaces.py`
+Expected: 各 `[...] ok/exists=True`，末行 `RESULT: OK`，退出码 0。若任一 FAIL，先修环境再继续 Task 11。
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add lora_gen/compat.py scripts/check_interfaces.py tests/lora_gen/test_compat.py
+git commit -m "feat(lora_gen): config 接口探测与 smoke 前自检脚本"
+```
+
+---
+
+### Task 11: CLI 与 provenance
 
 **Files:**
 - Create: `scripts/build_lora_dataset.py`
@@ -1700,6 +1962,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config_loader import load_config
 from retrieve.pipeline import Retriever
+from lora_gen.compat import probe_config
 from lora_gen.dgconfig import load_dg_config
 from lora_gen.backends import make_backend
 from lora_gen.export import build_report, stratified_split, write_dataset, write_meta, write_rejected
@@ -1722,7 +1985,7 @@ def main() -> None:
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    config = load_config()
+    config = probe_config(load_config())  # 接口探测 + 缺失则 fallback adapter
     dg = load_dg_config(target_override=args.target)
 
     index_path = config.index_path()
@@ -1741,13 +2004,14 @@ def main() -> None:
         out_dir=out_dir, rng=rng,
     )
 
-    write_dataset(res.accepted, Path("ito_lora_dataset.json"))
-    write_meta(res.metas, Path("ito_lora_dataset.meta.jsonl"))
+    # 所有产物统一写入 out_dir，不散落项目根目录
+    write_dataset(res.accepted, out_dir / "ito_lora_dataset.json")
+    write_meta(res.metas, out_dir / "ito_lora_dataset.meta.jsonl")
     write_rejected(res.rejected, out_dir / "ito_lora_dataset_rejected.json")
 
     train, dev = stratified_split(res.task_pairs, train_ratio=dg.raw["export"]["train_dev_split"], rng=rng)
-    write_dataset(train, Path("ito_lora_dataset.train.json"))
-    write_dataset(dev, Path("ito_lora_dataset.dev.json"))
+    write_dataset(train, out_dir / "ito_lora_dataset.train.json")
+    write_dataset(dev, out_dir / "ito_lora_dataset.dev.json")
 
     report = build_report(
         accepted_tiers=[m.accept_tier for m in res.metas],
@@ -1765,22 +2029,27 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: 冒烟运行（小目标，真实 LLM + 检索）**
+- [ ] **Step 2: 接口自检（smoke 前置门）**
+
+Run: `../.venv/Scripts/python.exe scripts/check_interfaces.py`
+Expected: 末行 `RESULT: OK`，退出码 0。FAIL 则先修环境，不进行 smoke。
+
+- [ ] **Step 3: 冒烟运行（小目标，真实 LLM + 检索）**
 
 Run: `../.venv/Scripts/python.exe scripts/build_lora_dataset.py --target 5 --out data/lora_smoke`
-Expected: 进程结束打印 `accepted=N rejected=M`；生成 `ito_lora_dataset.json`（≥1 条且字段严格）、`data/lora_smoke/generation_report.md`、`checkpoint.jsonl`。若 N=0，检查 `data/lora_smoke/ito_lora_dataset_rejected.json` 的 reason 分布定位瓶颈（chunk/问题/检索）。
+Expected: 进程结束打印 `accepted=N rejected=M`；全部产物在 `data/lora_smoke/` 下：`ito_lora_dataset.json`（≥1 条且字段严格）、`ito_lora_dataset.meta.jsonl`、`ito_lora_dataset_rejected.json`、`ito_lora_dataset.train.json`/`.dev.json`、`generation_report.md`、`checkpoint.jsonl`。项目根目录不应新增数据文件。若 N=0，看 `data/lora_smoke/ito_lora_dataset_rejected.json` 的 reason 分布定位瓶颈（chunk/问题/检索）。
 
-- [ ] **Step 3: 断点续传验证**
+- [ ] **Step 4: 断点续传验证**
 
 再次运行同一命令，确认日志显示已完成 qid 被跳过、不重复消耗 LLM。
 Run: `../.venv/Scripts/python.exe scripts/build_lora_dataset.py --target 5 --out data/lora_smoke`
 Expected: 快速结束，accepted/rejected 数与上次一致（无重复生成）。
 
-- [ ] **Step 4: 更新 provenance**
+- [ ] **Step 5: 更新 provenance**
 
 将 `docs/dataset_provenance.md` 改写为新流水线版本，至少包含：生成方式（chunk 反推 + 单车型 RAG 回检门 + 质检 + 人工抽修）、复现命令（上面的 CLI）、字段说明（含 meta sidecar）、记录 corpus 指纹 / backend / `dataset_gen.yaml` hash / accepted-rejected 统计 / 人工抽检比例（引用 `generation_report.md`）。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/build_lora_dataset.py docs/dataset_provenance.md
@@ -1800,12 +2069,12 @@ Expected: 生成 `ito_lora_dataset.json` 等；`data/lora_pilot/generation_repor
 
 - [ ] **Step 2: 校验最终格式严格性**
 
-Run: `../.venv/Scripts/python.exe -c "import json;d=json.load(open('ito_lora_dataset.json',encoding='utf-8'));assert all(set(x)=={'instruction','input','output'} for x in d);print('ok',len(d))"`
-Expected: `ok <N>`（N≥4 类任务齐全；可另行统计 task 分布）。
+Run: `../.venv/Scripts/python.exe -c "import json;d=json.load(open('data/lora_pilot/ito_lora_dataset.json',encoding='utf-8'));assert all(set(x)=={'instruction','input','output'} for x in d);print('ok',len(d))"`
+Expected: `ok <N>`（N 接近 100；task 分布≥4 类，可另行统计）。
 
 - [ ] **Step 3: 人工抽查 meta**
 
-抽查 `ito_lora_dataset.meta.jsonl` 中 `accept_tier=partial_ok` 与 `seed_score` 偏低样本，确认 output 与 evidence 一致、无车型串味。记录抽检比例到报告。
+抽查 `data/lora_pilot/ito_lora_dataset.meta.jsonl` 中 `accept_tier=partial_ok` 与 `seed_score` 偏低样本，确认 output 与 evidence 一致、无车型串味。记录抽检比例到报告。
 
 - [ ] **Step 4: 决定是否扩量**
 
@@ -1816,8 +2085,8 @@ Expected: `ok <N>`（N≥4 类任务齐全；可另行统计 task 分布）。
 ## Self-Review
 
 **Spec coverage：**
-- §1 交付物（dataset/train-dev/meta/rejected/report/provenance）→ Task 8、10、11 ✓
-- §2 模块结构 → Task 0–10 一一对应 ✓
+- §1 交付物（dataset/train-dev/meta/rejected/report/provenance）→ Task 8、11、12 ✓
+- §2 模块结构 → Task 0–11 一一对应 ✓
 - §3 数据流 + §3.1 round-robin + §3.2 generation reject → Task 3、9 ✓
 - §4 answerability 分档/single_chunk_full/partial 配额/evidence_conflict → Task 6 ✓
 - §5 quality 全部规则 + input&output 车型检查 → Task 7 ✓
@@ -1826,6 +2095,15 @@ Expected: `ok <N>`（N≥4 类任务齐全；可另行统计 task 分布）。
 - §8 配置键 → Task 0 ✓
 - §9 测试策略 → 各 Task TDD ✓
 
+**用户追加 7 项 coverage：**
+1. CLI config 接口探测 + fallback adapter → Task 10（`compat.probe_config`/`ConfigAdapter`）、Task 11 CLI 调用 ✓
+2. vehicle_conflict 归一化（detect_models 返回 id，别名解析回同一 id）→ Task 7（`foreign_vehicles` 注释 + `test_foreign_vehicles_bound_alias_not_flagged`）✓
+3. 全部产物写入 --out 目录 → Task 11 CLI（dataset/meta/rejected/train/dev/report/checkpoint 均 out_dir）✓
+4. oversample_factor / max_attempts，以 accepted 达 target 为目标 → Task 0 配置 + Task 9（`plan_target`、循环早停）✓
+5. extract_json fenced 优先 + brace-balanced fallback → Task 5（`_FENCE_RE`/`_balanced_object` + 2 新测试）✓
+6. normalized exact question 去重 → Task 7（`normalize_question`）+ Task 9（检索前 `seen_norm` 拦截 `duplicate`）✓
+7. smoke 前接口检查脚本 → Task 10（`scripts/check_interfaces.py`）+ Task 11 Step 2 前置门 ✓
+
 **Placeholder scan：** 无 TBD/TODO；所有代码步骤含完整实现与可运行命令。
 
-**Type consistency：** `evaluate(...)` 返回 `Verdict(accept,tier,reason,signals)`，pipeline 按此字段读取 ✓；`run_quality(...)` 返回 `QualityVerdict(ok,reason,detail,cleaned_output)`，pipeline 按此读取 ✓；`make_backend(name, config, dg)` 三参一致（backends 定义、CLI 调用）✓；`build_plan(...)` 关键字参数与 registry/pipeline 一致 ✓；`Sample/SampleMeta/Rejected.to_record` 与 export 一致 ✓。
+**Type consistency：** `evaluate(...)` 返回 `Verdict(accept,tier,reason,signals)`，pipeline 按此读取 ✓；`run_quality(...)` 返回 `QualityVerdict(ok,reason,detail,cleaned_output)`，pipeline 按此读取 ✓；`make_backend(name, config, dg)` 三参一致（定义/CLI）✓；`build_plan(...)` 关键字参数与 registry/pipeline 一致 ✓；`normalize_question` 定义于 quality、被 pipeline import ✓；`probe_config` 定义于 compat、被 CLI/check_interfaces import ✓；`extract_json` 签名不变（fenced+balanced 内部实现）✓；`Sample/SampleMeta/Rejected.to_record` 与 export 一致 ✓。
