@@ -9,13 +9,13 @@ per_vehicle_min: 3
 per_vehicle_max: 10
 generation_retries: 2
 seed: 20260623
+# 参考目标分布（task_type 实际由 chunk 的 section_path 反推，不强制配比；此处仅供质检参照）
 task_distribution: {直接问答: 0.30, 步骤指导: 0.25, 故障分析: 0.20, 术语解释: 0.15, 安全提醒: 0.10}
 answerability:
   topk: 5
   min_retrieved: 2
   seed_score_min: 0.30
   seed_score_min_single: 0.35
-  max_score_min: 0.35
   strong_seed_rank_max: 3
   strong_max_score_min: 0.45
   strong_same_section_min: 2
@@ -30,6 +30,5 @@ quality:
     故障分析: 700
     术语解释: 400
     安全提醒: 500
-  dup_threshold: 0.90
 export:
   train_dev_split: 0.9

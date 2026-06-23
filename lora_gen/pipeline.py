@@ -27,19 +27,21 @@ def make_qid(model_id: str, chunk_id: str, task_type: str) -> str:
     return "Q" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
-def load_done_qids(checkpoint_path: Path) -> set[str]:
-    if not checkpoint_path.exists():
-        return set()
-    done: set[str] = set()
-    for line in checkpoint_path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            done.add(json.loads(line)["qid"])
-    return done
+# 断点续传：完整记录持久化到这两个 JSONL，resume 时回放重建 result，
+# 避免「只存 qid → 续跑覆盖丢失旧产出」的问题。
+ACCEPTED_FILE = "accepted.jsonl"
+REJECTED_FILE = "rejected.jsonl"
 
 
-def append_checkpoint(checkpoint_path: Path, qid: str, status: str) -> None:
-    with checkpoint_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"qid": qid, "status": status}, ensure_ascii=False) + "\n")
+def _append_jsonl(path: Path, record: dict) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 def preview(text: str, n: int = 50) -> str:
@@ -52,6 +54,39 @@ class RunResult:
     metas: list[SampleMeta] = field(default_factory=list)
     rejected: list[Rejected] = field(default_factory=list)
     task_pairs: list[tuple[Sample, str]] = field(default_factory=list)
+
+
+@dataclass
+class ResumeState:
+    result: RunResult
+    done: set[str]
+    partial_count: int
+    seen_norm: set[str]
+
+
+def load_prior(out_dir: Path) -> ResumeState:
+    """从 out_dir 的持久化记录重建续跑状态（result/done/partial_count/seen_norm）。"""
+    result = RunResult()
+    done: set[str] = set()
+    seen_norm: set[str] = set()
+    partial_count = 0
+    for rec in _read_jsonl(out_dir / ACCEPTED_FILE):
+        sample = Sample(**rec["sample"])
+        meta = SampleMeta(**rec["meta"])
+        result.accepted.append(sample)
+        result.metas.append(meta)
+        result.task_pairs.append((sample, meta.task_type))
+        done.add(meta.qid)
+        seen_norm.add(normalize_question(sample.input))
+        if meta.accept_tier == "partial_ok":
+            partial_count += 1
+    for rec in _read_jsonl(out_dir / REJECTED_FILE):
+        rej = Rejected(**rec)
+        result.rejected.append(rej)
+        done.add(rej.qid)
+        if rej.question:
+            seen_norm.add(normalize_question(rej.question))
+    return ResumeState(result=result, done=done, partial_count=partial_count, seen_norm=seen_norm)
 
 
 def _gen_json(backend, prompt: str, retries: int) -> dict:
@@ -94,12 +129,14 @@ def run(
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint = out_dir / "checkpoint.jsonl"
-    done = load_done_qids(checkpoint)
-    result = RunResult()
-    partial_count = 0
+    accepted_path = out_dir / ACCEPTED_FILE
+    rejected_path = out_dir / REJECTED_FILE
+    prior = load_prior(out_dir)
+    result = prior.result
+    done = prior.done
+    partial_count = prior.partial_count
+    seen_norm = prior.seen_norm
     attempts = 0
-    seen_norm: set[str] = set()
     retries = dg.raw["generation_retries"]
     max_attempts = dg.raw["max_attempts"]
     a_cfg = dg.answerability
@@ -134,12 +171,12 @@ def run(
         except GenerationError as e:
             base.reject_stage, base.reject_reason, base.reject_detail = "generation", "json_parse_failed", str(e)
             result.rejected.append(base)
-            append_checkpoint(checkpoint, qid, "rejected:json_parse_failed")
+            _append_jsonl(rejected_path, base.to_record())
             continue
         if not question:
             base.reject_stage, base.reject_reason = "generation", "missing_required_field"
             result.rejected.append(base)
-            append_checkpoint(checkpoint, qid, "rejected:missing_required_field")
+            _append_jsonl(rejected_path, base.to_record())
             continue
         base.question = question
 
@@ -148,7 +185,7 @@ def run(
         if nq in seen_norm:
             base.reject_stage, base.reject_reason = "generation", "duplicate"
             result.rejected.append(base)
-            append_checkpoint(checkpoint, qid, "rejected:duplicate")
+            _append_jsonl(rejected_path, base.to_record())
             continue
         seen_norm.add(nq)
 
@@ -182,7 +219,7 @@ def run(
             base.reject_stage, base.reject_reason = "answerability", verdict.reason
             base.reject_detail = json.dumps(verdict.signals, ensure_ascii=False)
             result.rejected.append(base)
-            append_checkpoint(checkpoint, qid, f"rejected:{verdict.reason}")
+            _append_jsonl(rejected_path, base.to_record())
             continue
 
         # 4) 答案生成（以回检 evidence 为准）
@@ -200,7 +237,7 @@ def run(
         except GenerationError as e:
             base.reject_stage, base.reject_reason, base.reject_detail = "generation", "json_parse_failed", str(e)
             result.rejected.append(base)
-            append_checkpoint(checkpoint, qid, "rejected:json_parse_failed")
+            _append_jsonl(rejected_path, base.to_record())
             continue
 
         sample = Sample(instruction=instruction, input=question, output=output)
@@ -211,7 +248,7 @@ def run(
         if not qv.ok:
             base.reject_stage, base.reject_reason, base.reject_detail = "quality", qv.reason, qv.detail
             result.rejected.append(base)
-            append_checkpoint(checkpoint, qid, f"rejected:{qv.reason}")
+            _append_jsonl(rejected_path, base.to_record())
             continue
 
         sample.output = qv.cleaned_output
@@ -232,7 +269,7 @@ def run(
         result.accepted.append(sample)
         result.metas.append(meta)
         result.task_pairs.append((sample, item.task_type))
-        append_checkpoint(checkpoint, qid, "accepted")
+        _append_jsonl(accepted_path, {"qid": qid, "meta": meta.to_record(), "sample": sample.to_record()})
         log.info("[accept:%s] %s | %s", verdict.tier, item.model_id, question[:30])
 
     return result

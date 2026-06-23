@@ -1,7 +1,7 @@
 """LoRA 样本与中间字段数据结构。"""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 
 @dataclass

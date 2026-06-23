@@ -57,10 +57,10 @@ def evaluate(
         return reject("evidence_conflict")
     if not seed_in_topk:
         return reject("seed_not_returned")
+    # seed_score 低于下限直接判低分；single_chunk_full（seed≥seed_score_min_single>下限）
+    # 的样本 seed_score 必然 ≥ 下限，不会落入此分支，故无需在此再开例外。
     if seed_score < cfg["seed_score_min"]:
-        # single_chunk_full 用更高的 seed 阈值单独判
-        if not (n == 1 and judge_label == "full" and seed_score >= cfg["seed_score_min_single"]):
-            return reject("low_score")
+        return reject("low_score")
 
     # strong
     if (
