@@ -2039,7 +2039,7 @@ Expected: 末行 `RESULT: OK`，退出码 0。FAIL 则先修环境，不进行 s
 - [ ] **Step 3: 冒烟运行（小目标，真实 LLM + 检索）**
 
 Run: `../.venv/Scripts/python.exe scripts/build_lora_dataset.py --target 5 --out data/lora_smoke`
-Expected: 进程结束打印 `accepted=N rejected=M`；全部产物在 `data/lora_smoke/` 下：`ito_lora_dataset.json`（≥1 条且字段严格）、`ito_lora_dataset.meta.jsonl`、`ito_lora_dataset_rejected.json`、`ito_lora_dataset.train.json`/`.dev.json`、`generation_report.md`、`checkpoint.jsonl`。项目根目录不应新增数据文件。若 N=0，看 `data/lora_smoke/ito_lora_dataset_rejected.json` 的 reason 分布定位瓶颈（chunk/问题/检索）。
+Expected: 进程结束打印 `accepted=N rejected=M`；全部产物在 `data/lora_smoke/` 下：`ito_lora_dataset.json`（≥1 条且字段严格）、`ito_lora_dataset.meta.jsonl`、`ito_lora_dataset_rejected.json`、`ito_lora_dataset.train.json`/`.dev.json`、`generation_report.md`，以及续跑用的持久化账本 `accepted.jsonl` / `rejected.jsonl`（resume 时由 `load_prior` 回放重建 result/配额/去重）。项目根目录不应新增数据文件。若 N=0，看 `data/lora_smoke/ito_lora_dataset_rejected.json` 的 reason 分布定位瓶颈（chunk/问题/检索）。
 
 - [ ] **Step 4: 断点续传验证**
 
