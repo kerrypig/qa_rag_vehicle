@@ -1044,7 +1044,9 @@ def evaluate(
         return reject("evidence_conflict")
     if not seed_in_topk:
         return reject("seed_not_returned")
-    if max_score < cfg["max_score_min"] or seed_score < cfg["seed_score_min"]:
+    # low_score 硬门只看 seed_score；max_score 仅在 strong 档用 strong_max_score_min 把关
+    # （partial_ok 证据天然分数偏低，max_score_min 若作硬门会误杀 partial）。
+    if seed_score < cfg["seed_score_min"]:
         # single_chunk_full 用更高的 seed 阈值单独判
         if not (n == 1 and judge_label == "full" and seed_score >= cfg["seed_score_min_single"]):
             return reject("low_score")
