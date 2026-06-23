@@ -1,0 +1,35 @@
+target_size: 100
+oversample_factor: 2.5     # 候选计划量 = ceil(target_size * oversample_factor)，应对回检/质检拒绝
+max_attempts: 400          # 处理候选数硬上限，避免无限循环
+backend: cloud
+judge_backend: local
+local_model: "qwen2.5:7b"
+vehicle_subset: []
+per_vehicle_min: 3
+per_vehicle_max: 10
+generation_retries: 2
+seed: 20260623
+task_distribution: {直接问答: 0.30, 步骤指导: 0.25, 故障分析: 0.20, 术语解释: 0.15, 安全提醒: 0.10}
+answerability:
+  topk: 5
+  min_retrieved: 2
+  seed_score_min: 0.30
+  seed_score_min_single: 0.35
+  max_score_min: 0.35
+  strong_seed_rank_max: 3
+  strong_max_score_min: 0.45
+  strong_same_section_min: 2
+  partial_ok_quota: 0.08
+chunks:
+  min_chars: 200
+  section_blacklist: [前言, 目录, 免责声明, 版权, 隐私, 单位, 术语, 缩略语, 修订记录, 联系方式]
+quality:
+  max_output_chars:
+    直接问答: 400
+    步骤指导: 800
+    故障分析: 700
+    术语解释: 400
+    安全提醒: 500
+  dup_threshold: 0.90
+export:
+  train_dev_split: 0.9
