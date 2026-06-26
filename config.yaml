@@ -149,6 +149,7 @@ generation:
   base_url_env: "DASHSCOPE_BASE_URL"
   temperature: 0.1
   max_tokens: 2048
+  enable_thinking: false   # 非流式调用须显式关闭思考模式
 
 logging:
   verbose: true

@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 from config_loader import load_config
 from retrieve.pipeline import Retriever

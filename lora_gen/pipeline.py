@@ -194,7 +194,7 @@ def run(
         retrieved = [
             RetrievedChunk(
                 chunk_id=d.metadata["chunk_id"],
-                score=rr.scores.get(d.metadata["chunk_id"], 0.0),
+                score=float(rr.scores.get(d.metadata["chunk_id"], 0.0)),
                 section_path=d.metadata.get("section_path", ""),
             )
             for d in rr.docs

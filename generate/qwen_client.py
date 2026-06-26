@@ -23,11 +23,13 @@ class QwenClient:
         self.model = gen.get("model", "qwen3.6-plus")
         self.temperature = gen.get("temperature", 0.1)
         self.max_tokens = gen.get("max_tokens", 2048)
+        self.enable_thinking = gen.get("enable_thinking", False)
 
     def chat(self, user_input: str, previous_response_id: str | None = None) -> tuple[str, str]:
         kwargs = {
             "model": self.model,
             "input": user_input,
+            "extra_body": {"enable_thinking": self.enable_thinking},
         }
         if previous_response_id:
             kwargs["previous_response_id"] = previous_response_id
