@@ -5,6 +5,7 @@
 
 # 索引与运行时产物
 indexes/
+indexes.tar
 logs/
 *.log
 
@@ -32,6 +33,13 @@ build/
 doc/
 data/manuals/*
 !data/manuals/README.md
+
+# 生成产物（语料/数据集/中间输出，不入库）
+data/aito_*.json
+data/lora_*/
+scripts/data/
+ito_lora_dataset.*
+aaa/
 
 # OS
 .DS_Store

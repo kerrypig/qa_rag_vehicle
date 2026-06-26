@@ -15,15 +15,27 @@
 
 ```bash
 cd qa_rag_vehicle
-python -m venv .venv
-.venv\Scripts\activate        # Windows
+python -m venv ../.venv
+
+# Windows PowerShell
+..\.venv\Scripts\activate
+
+# Git Bash / Linux / macOS
+source ../.venv/Scripts/activate    # Git Bash on Windows
+# source ../.venv/bin/activate      # Linux / macOS
+
 pip install -r requirements.txt
 ```
 
 ### 2. API 密钥（不会上传 GitHub）
 
 ```bash
+# Windows PowerShell
 copy .env.example .env
+
+# Git Bash / Linux / macOS
+cp .env.example .env
+
 # 编辑 .env，填入 DASHSCOPE_API_KEY
 ```
 
@@ -34,7 +46,8 @@ copy .env.example .env
 ### 4. 启动 Ollama（Query Rewrite 需要）
 
 ```bash
-ollama run qwen2.5:7b
+ollama pull qwen2.5:7b
+ollama serve          # 常驻服务；也可用 ollama run qwen2.5:7b
 ```
 
 若关闭改写，可在 `config.yaml` 设置 `query_rewrite.enabled: false`。
@@ -48,6 +61,26 @@ python main.py chat
 python main.py info
 ```
 
+### 6. 一键启动命令（bash）
+
+```bash
+# 首次建库后启动问答
+python main.py build && python main.py chat
+
+# 已建库时直接进入问答
+python main.py chat
+```
+
+### 7. 生成 LoRA 语料（bash）
+
+```bash
+# 跑批前自检：corpus / Retriever / DashScope / Ollama 是否就绪
+python scripts/check_interfaces.py
+
+# 生成 100 条 pilot 数据，产物写入 data/lora_out/
+python scripts/build_lora_dataset.py --target 100 --out data/lora_out
+```
+
 ## CLI 命令
 
 | 命令 | 说明 |
@@ -56,6 +89,8 @@ python main.py info
 | `python main.py build --strategy hierarchy` | 指定切分策略 |
 | `python main.py chat` | 多轮终端问答 |
 | `python main.py info` | 查看配置与建库状态 |
+| `python scripts/check_interfaces.py` | LoRA 跑批前接口自检 |
+| `python scripts/build_lora_dataset.py --target 100 --out data/lora_out` | 生成 LoRA 语料 pilot 数据 |
 
 对话中：`/quit` 退出 · `/clear` 清空会话 · `/log` 检索详情 · `/config` 配置摘要
 
@@ -75,9 +110,11 @@ python main.py info
 - `.env` 已在 `.gitignore` 中，**切勿**将 API Key 提交到 Git
 - PDF 手册默认不入库（体积大），请自行放置
 
-## 设计文档
+## 文档
 
-详见 [docs/design.md](docs/design.md)。
+- [docs/design.md](docs/design.md) — RAG 系统设计规格
+- [docs/lora_pipeline.md](docs/lora_pipeline.md) — **LoRA 语料生成流水线技术文档**（检索升级 + 语料生成两条工作流、启动方式、环境配置）
+- [docs/dataset_provenance.md](docs/dataset_provenance.md) — 训练数据集来源说明
 
 ## 二期规划
 
