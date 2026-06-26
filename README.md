@@ -75,9 +75,11 @@ python main.py info
 - `.env` 已在 `.gitignore` 中，**切勿**将 API Key 提交到 Git
 - PDF 手册默认不入库（体积大），请自行放置
 
-## 设计文档
+## 文档
 
-详见 [docs/design.md](docs/design.md)。
+- [docs/design.md](docs/design.md) — RAG 系统设计规格
+- [docs/lora_pipeline.md](docs/lora_pipeline.md) — **LoRA 语料生成流水线技术文档**（检索升级 + 语料生成两条工作流、启动方式、环境配置）
+- [docs/dataset_provenance.md](docs/dataset_provenance.md) — 训练数据集来源说明
 
 ## 二期规划
 
