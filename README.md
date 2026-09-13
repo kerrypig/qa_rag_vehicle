@@ -94,6 +94,15 @@ python scripts/build_lora_dataset.py --target 100 --out data/lora_out
 
 对话中：`/quit` 退出 · `/clear` 清空会话 · `/log` 检索详情 · `/config` 配置摘要
 
+## 测试
+
+`tests/` 下是 LoRA 语料流水线（`lora_gen`）的单元测试，均为本地纯逻辑：不需要 `.env`、PDF 手册、Ollama 或已建好的索引，几秒内即可跑完。在仓库根目录执行：
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+
 ## 配置说明
 
 见 `config.yaml`。关键项：
